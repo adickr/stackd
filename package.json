@@ -14,6 +14,7 @@
     "d3-scale": "^4.0.2",
     "d3-shape": "^3.2.0",
     "expo": "~54.0.30",
+    "expo-dev-client": "~6.0.20",
     "expo-router": "~6.0.21",
     "expo-status-bar": "~3.0.9",
     "react": "19.1.0",
