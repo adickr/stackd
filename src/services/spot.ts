@@ -1,5 +1,9 @@
-export async function fetchSilverZarPerOz(): Promise<{
-  silverZarPerOz: number;
+// src/services/spot.ts
+
+export type SpotCurrency = "ZAR" | "USD";
+
+export async function fetchSilverPerOz(to: SpotCurrency): Promise<{
+  perOz: number;
   fetchedAt: number;
   source: string;
 }> {
@@ -14,27 +18,40 @@ export async function fetchSilverZarPerOz(): Promise<{
   const url =
     `https://api.exchangerate.host/convert` +
     `?access_key=${encodeURIComponent(accessKey)}` +
-    `&from=XAG&to=ZAR&amount=1`;
+    `&from=XAG&to=${encodeURIComponent(to)}` +
+    `&amount=1`;
 
   const res = await fetch(url);
   const data = await res.json().catch(() => null);
 
   if (!res.ok) {
+    // If provider returns 429 etc, include body to help debugging
     throw new Error(`Spot API HTTP ${res.status}: ${JSON.stringify(data)}`);
   }
 
   if (!data?.success) {
+    // typical: {success:false, error:{info:"rate limit reached"...}}
     throw new Error(data?.error?.info ?? "Spot API failed (success=false)");
   }
 
   const result = Number(data.result);
   if (!Number.isFinite(result) || result <= 0) {
-    throw new Error(`Invalid spot result: ${String(data.result)}`);
+    throw new Error(`Invalid spot result for ${to}: ${String(data.result)}`);
   }
 
   return {
-    silverZarPerOz: result,
+    perOz: result,
     fetchedAt: Date.now(),
-    source: "exchangerate.host XAG→ZAR",
+    source: `exchangerate.host XAG→${to}`,
   };
+}
+
+// Backwards-compatible helper if any older code still imports this
+export async function fetchSilverZarPerOz(): Promise<{
+  silverZarPerOz: number;
+  fetchedAt: number;
+  source: string;
+}> {
+  const r = await fetchSilverPerOz("ZAR");
+  return { silverZarPerOz: r.perOz, fetchedAt: r.fetchedAt, source: r.source };
 }

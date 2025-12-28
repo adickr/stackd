@@ -1,201 +1,246 @@
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo } from "react";
 import {
   View,
   Text,
   Pressable,
   ScrollView,
-  ActivityIndicator,
+  RefreshControl,
+  StyleSheet,
 } from "react-native";
 import { useRouter } from "expo-router";
+import { Ionicons } from "@expo/vector-icons";
+import Svg, { Path, G, Circle } from "react-native-svg";
 
 import { useStackStore } from "../src/stores/stackStore";
-import { useSpotStore } from "../src/stores/spotStore";
 import { useCoinStore } from "../src/stores/coinStore";
-import { fetchSilverZarPerOz } from "../src/services/spot";
+import { useSpotStore } from "../src/stores/spotStore";
+import { useSettingsStore } from "../src/stores/settingsStore";
 
-const TROY_OZ_IN_GRAMS = 31.1034768;
+const TROY_OZ_GRAMS = 31.1035;
 
-function fmt(n: number) {
-  return n.toLocaleString(undefined, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
+/* ---------------- helpers ---------------- */
+
+function formatCurrency(value: number, currency: "ZAR" | "USD") {
+  try {
+    return new Intl.NumberFormat(
+      currency === "ZAR" ? "en-ZA" : "en-US",
+      { style: "currency", currency, maximumFractionDigits: 0 }
+    ).format(value);
+  } catch {
+    return `${currency} ${Math.round(value).toLocaleString()}`;
+  }
 }
 
-export default function Home() {
+function formatWeight(oz: number, unit: "oz" | "g") {
+  if (unit === "g") {
+    const g = oz * TROY_OZ_GRAMS;
+    return `${g.toFixed(g < 100 ? 1 : 0)} g`;
+  }
+  return `${oz.toFixed(2)} oz`;
+}
+
+/* ---------------- screen ---------------- */
+
+export default function HomeScreen() {
   const router = useRouter();
 
-  const entries = useStackStore((s) => s.entries);
+  const unit = useSettingsStore((s) => s.unit);
+  const currency = useSettingsStore((s) => s.currency);
 
-  const getCoin = useCoinStore((s) => s.getCoin);
+  const entries = useStackStore((s) => s.entries);
+  const coins = useCoinStore((s) => s.coins);
   const seedIfEmpty = useCoinStore((s) => s.seedIfEmpty);
 
-  const silverZarPerOz = useSpotStore((s) => s.silverZarPerOz);
+  const spotZar = useSpotStore((s) => s.silverZarPerOz);
+  const spotUsd = useSpotStore((s) => s.silverUsdPerOz);
   const fetchedAt = useSpotStore((s) => s.fetchedAt);
-  const setSpot = useSpotStore((s) => s.setSpot);
-
-  const [loadingSpot, setLoadingSpot] = useState(false);
+  const refreshSpot = useSpotStore((s) => s.refreshSpot);
+  const isLoading = useSpotStore((s) => s.isLoading);
 
   useEffect(() => {
     seedIfEmpty();
   }, [seedIfEmpty]);
 
-  // ---------- totals ----------
-  const totalOz = useMemo(() => {
-    return entries.reduce((sum, e) => {
-      const coin = getCoin(e.coinTypeId);
-      if (!coin) return sum;
-      const fineGrams = e.quantity * coin.fineWeightGrams;
-      return sum + fineGrams / TROY_OZ_IN_GRAMS;
-    }, 0);
-  }, [entries, getCoin]);
-
-  const totalValue = useMemo(() => {
-    if (!silverZarPerOz) return 0;
-    return totalOz * silverZarPerOz;
-  }, [totalOz, silverZarPerOz]);
-
-  // ---------- fetch spot ----------
-  async function refreshSpot() {
-    try {
-      setLoadingSpot(true);
-      const spot = await fetchSilverZarPerOz();
-      setSpot(spot);
-    } catch (e) {
-      console.warn("Failed to fetch spot", e);
-    } finally {
-      setLoadingSpot(false);
+  const coinById = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const c of coins) {
+      map[c.id] = (c.fineWeightGrams ?? 0) / TROY_OZ_GRAMS;
     }
-  }
+    return map;
+  }, [coins]);
 
-  // auto-refresh if missing or stale (>1h)
-  useEffect(() => {
-    const stale = !fetchedAt || Date.now() - fetchedAt > 60 * 60 * 1000;
-    if (stale) refreshSpot();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const totalOz = useMemo(() => {
+    return entries.reduce(
+      (sum, e) => sum + e.quantity * (coinById[e.coinTypeId] ?? 0),
+      0
+    );
+  }, [entries, coinById]);
+
+  const spot = currency === "ZAR" ? spotZar : spotUsd;
+  const portfolioValue = spot > 0 ? totalOz * spot : 0;
+
+  /* --------- My Stack (donut) --------- */
+
+  const stackSlices = useMemo(() => {
+    const byId: Record<string, number> = {};
+    for (const e of entries) {
+      byId[e.coinTypeId] =
+        (byId[e.coinTypeId] ?? 0) +
+        e.quantity * (coinById[e.coinTypeId] ?? 0);
+    }
+
+    const total = Object.values(byId).reduce((a, b) => a + b, 0) || 1;
+    return Object.entries(byId)
+      .map(([id, oz]) => ({
+        id,
+        name: coins.find((c) => c.id === id)?.name ?? "Unknown",
+        pct: oz / total,
+      }))
+      .sort((a, b) => b.pct - a.pct)
+      .slice(0, 5);
+  }, [entries, coinById, coins]);
+
+  /* ---------------- render ---------------- */
 
   return (
-    <View style={{ flex: 1, backgroundColor: "#fff", padding: 20 }}>
-      {/* ---------- header ---------- */}
-      <Text style={{ fontSize: 28, fontWeight: "900", marginBottom: 6 }}>
-        Stackd
-      </Text>
-      <Text style={{ color: "#555", marginBottom: 16 }}>
-        Your silver stack
-      </Text>
+    <ScrollView
+      contentContainerStyle={styles.container}
+      refreshControl={
+        <RefreshControl refreshing={isLoading} onRefresh={refreshSpot} />
+      }
+    >
+      {/* Hero */}
+      <View style={styles.hero}>
+        <View style={styles.heroHeader}>
+          <Text style={styles.appTitle}>Stackd</Text>
+          <Pressable onPress={() => router.push("/settings")}>
+            <Ionicons name="settings-outline" size={22} />
+          </Pressable>
+        </View>
 
-      {/* ---------- totals ---------- */}
-      <View
-        style={{
-          borderWidth: 1,
-          borderColor: "#eee",
-          borderRadius: 16,
-          padding: 16,
-          gap: 10,
-          marginBottom: 16,
-        }}
-      >
-        <Text style={{ fontSize: 16 }}>
-          Total silver:{" "}
-          <Text style={{ fontWeight: "900" }}>{fmt(totalOz)} oz</Text>
+        <Text style={styles.heroValue}>
+          {portfolioValue > 0 ? formatCurrency(portfolioValue, currency) : "—"}
         </Text>
 
-        <Text style={{ fontSize: 16 }}>
-          Value:{" "}
-          <Text style={{ fontWeight: "900" }}>
-            R {fmt(totalValue)}
-          </Text>
+        <Text style={styles.heroSub}>
+          {formatWeight(totalOz, unit)} • {currency}/oz •{" "}
+          {fetchedAt ? "updated" : "tap refresh"}
         </Text>
-
-        <Pressable
-          onPress={refreshSpot}
-          disabled={loadingSpot}
-          style={{
-            marginTop: 6,
-            paddingVertical: 10,
-            borderRadius: 10,
-            borderWidth: 1,
-            borderColor: "#ddd",
-            alignItems: "center",
-          }}
-        >
-          {loadingSpot ? (
-            <ActivityIndicator />
-          ) : (
-            <Text style={{ fontWeight: "800" }}>
-              Refresh spot
-              {silverZarPerOz ? ` (R ${fmt(silverZarPerOz)}/oz)` : ""}
-            </Text>
-          )}
-        </Pressable>
-
-        {fetchedAt && (
-          <Text style={{ color: "#777", fontSize: 12 }}>
-            Updated {new Date(fetchedAt).toLocaleString()}
-          </Text>
-        )}
       </View>
 
-      {/* ---------- add button ---------- */}
+      {/* My Stack */}
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>My Stack</Text>
+
+        <View style={styles.donutWrap}>
+          <Svg width={180} height={180} viewBox="0 0 100 100">
+            <G rotation="-90" origin="50,50">
+              {renderDonut(stackSlices)}
+            </G>
+          </Svg>
+        </View>
+
+        {stackSlices.map((s) => (
+          <View key={s.id} style={styles.sliceRow}>
+            <Text style={styles.sliceName}>{s.name}</Text>
+            <Text style={styles.slicePct}>
+              {Math.round(s.pct * 100)}%
+            </Text>
+          </View>
+        ))}
+      </View>
+
+      {/* CTA */}
       <Pressable
         onPress={() => router.push("/stack/add")}
-        style={{
-          backgroundColor: "#111",
-          paddingVertical: 14,
-          borderRadius: 14,
-          alignItems: "center",
-          marginBottom: 18,
-        }}
+        style={styles.cta}
       >
-        <Text style={{ color: "#fff", fontWeight: "900", fontSize: 16 }}>
-          + Stack silver
-        </Text>
+        <Text style={styles.ctaText}>＋ Stack</Text>
       </Pressable>
-
-      {/* ---------- entries ---------- */}
-      <Text style={{ fontSize: 18, fontWeight: "900", marginBottom: 10 }}>
-        Entries
-      </Text>
-
-      <ScrollView contentContainerStyle={{ gap: 10 }}>
-        {entries.length === 0 ? (
-          <Text style={{ color: "#666" }}>
-            No entries yet. Stack your first coin.
-          </Text>
-        ) : (
-          entries.map((e) => {
-            const coin = getCoin(e.coinTypeId);
-            const coinName = coin?.name ?? "Unknown coin";
-            const perUnitOz = coin ? coin.fineWeightGrams / TROY_OZ_IN_GRAMS : 0;
-            const fineOz = perUnitOz * e.quantity;
-
-            return (
-              <Pressable
-                key={e.id}
-                onPress={() => router.push(`/entries/${e.id}`)}
-                style={{
-                  borderWidth: 1,
-                  borderColor: "#eee",
-                  borderRadius: 14,
-                  padding: 14,
-                  gap: 6,
-                }}
-              >
-                <Text style={{ fontWeight: "900" }}>{coinName}</Text>
-
-                <Text style={{ color: "#555" }}>
-                  {e.quantity} × {fmt(perUnitOz)} oz = {fmt(fineOz)} oz
-                </Text>
-
-                <Text style={{ color: "#777" }}>
-                  Paid R {fmt(e.totalPaid)}
-                </Text>
-              </Pressable>
-            );
-          })
-        )}
-      </ScrollView>
-    </View>
+    </ScrollView>
   );
 }
+
+/* ---------------- donut helpers ---------------- */
+
+function renderDonut(slices: { pct: number }[]) {
+  let start = 0;
+  const colors = [
+    "#111",
+    "#333",
+    "#555",
+    "#777",
+    "#999",
+  ];
+
+  return slices.map((s, i) => {
+    const end = start + s.pct * 2 * Math.PI;
+    const path = describeArc(50, 50, 35, start, end);
+    start = end;
+    return (
+      <Path
+        key={i}
+        d={path}
+        stroke={colors[i % colors.length]}
+        strokeWidth={12}
+        fill="none"
+      />
+    );
+  });
+}
+
+function describeArc(x: number, y: number, r: number, start: number, end: number) {
+  const sx = x + r * Math.cos(start);
+  const sy = y + r * Math.sin(start);
+  const ex = x + r * Math.cos(end);
+  const ey = y + r * Math.sin(end);
+  const large = end - start > Math.PI ? 1 : 0;
+
+  return `M ${sx} ${sy} A ${r} ${r} 0 ${large} 1 ${ex} ${ey}`;
+}
+
+/* ---------------- styles ---------------- */
+
+const styles = StyleSheet.create({
+  container: { padding: 16, paddingBottom: 28 },
+
+  hero: { marginBottom: 12 },
+  heroHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginBottom: 10,
+  },
+  appTitle: { fontSize: 22, fontWeight: "700" },
+  heroValue: { fontSize: 36, fontWeight: "800" },
+  heroSub: { opacity: 0.7, marginTop: 6 },
+
+  card: {
+    marginTop: 14,
+    padding: 14,
+    borderRadius: 18,
+    backgroundColor: "rgba(0,0,0,0.06)",
+  },
+  cardTitle: { fontWeight: "800", opacity: 0.75 },
+
+  donutWrap: {
+    alignItems: "center",
+    marginVertical: 14,
+  },
+
+  sliceRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    paddingVertical: 6,
+  },
+  sliceName: { fontWeight: "700" },
+  slicePct: { fontWeight: "800" },
+
+  cta: {
+    marginTop: 18,
+    paddingVertical: 14,
+    borderRadius: 16,
+    alignItems: "center",
+    backgroundColor: "rgba(0,0,0,0.14)",
+  },
+  ctaText: { fontSize: 16, fontWeight: "900" },
+});
