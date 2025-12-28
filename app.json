@@ -2,6 +2,7 @@
   "expo": {
     "name": "stackd",
     "slug": "stackd",
+    "scheme": "stackd",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -14,7 +15,7 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.anonymous.stackd"
+      "bundleIdentifier": "com.adickr.stackd"
     },
     "android": {
       "adaptiveIcon": {
@@ -23,7 +24,7 @@
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
-      "package": "com.anonymous.stackd"
+      "package": "com.adickr.stackd"
     },
     "web": {
       "favicon": "./assets/favicon.png"
