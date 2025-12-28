@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -7,27 +7,47 @@ import {
   RefreshControl,
   StyleSheet,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import Svg, { Path, G, Circle } from "react-native-svg";
 
 import { useStackStore } from "../src/stores/stackStore";
 import { useCoinStore } from "../src/stores/coinStore";
 import { useSpotStore } from "../src/stores/spotStore";
 import { useSettingsStore } from "../src/stores/settingsStore";
 
+import { MyStackConviction } from "../src/components/MyStackConviction";
+
+// ✅ tokens
+import { colors, spacing, radius, text } from "../src/theme/tokens";
+
 const TROY_OZ_GRAMS = 31.1035;
+const PAGE_SIZE = 10;
 
 /* ---------------- helpers ---------------- */
 
 function formatCurrency(value: number, currency: "ZAR" | "USD") {
   try {
-    return new Intl.NumberFormat(
-      currency === "ZAR" ? "en-ZA" : "en-US",
-      { style: "currency", currency, maximumFractionDigits: 0 }
-    ).format(value);
+    return new Intl.NumberFormat(currency === "ZAR" ? "en-ZA" : "en-US", {
+      style: "currency",
+      currency,
+      maximumFractionDigits: 0,
+    }).format(value);
   } catch {
     return `${currency} ${Math.round(value).toLocaleString()}`;
+  }
+}
+
+function formatSpot(value: number, currency: "ZAR" | "USD") {
+  if (!Number.isFinite(value) || value <= 0) return "—";
+  try {
+    return new Intl.NumberFormat(currency === "ZAR" ? "en-ZA" : "en-US", {
+      style: "currency",
+      currency,
+      maximumFractionDigits: 2,
+    }).format(value);
+  } catch {
+    return `${currency} ${value.toFixed(2)}`;
   }
 }
 
@@ -37,6 +57,10 @@ function formatWeight(oz: number, unit: "oz" | "g") {
     return `${g.toFixed(g < 100 ? 1 : 0)} g`;
   }
   return `${oz.toFixed(2)} oz`;
+}
+
+function ymd(ms: number) {
+  return new Date(ms).toISOString().slice(0, 10);
 }
 
 /* ---------------- screen ---------------- */
@@ -50,6 +74,7 @@ export default function HomeScreen() {
   const entries = useStackStore((s) => s.entries);
   const coins = useCoinStore((s) => s.coins);
   const seedIfEmpty = useCoinStore((s) => s.seedIfEmpty);
+  const getCoin = useCoinStore((s) => s.getCoin);
 
   const spotZar = useSpotStore((s) => s.silverZarPerOz);
   const spotUsd = useSpotStore((s) => s.silverUsdPerOz);
@@ -57,14 +82,37 @@ export default function HomeScreen() {
   const refreshSpot = useSpotStore((s) => s.refreshSpot);
   const isLoading = useSpotStore((s) => s.isLoading);
 
+  // UI state for purchases
+  const [showPurchases, setShowPurchases] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+
   useEffect(() => {
     seedIfEmpty();
   }, [seedIfEmpty]);
 
+  // Fetch spot once on first load
+  useEffect(() => {
+    if (!fetchedAt) refreshSpot();
+  }, [fetchedAt, refreshSpot]);
+
+  // Reset pagination when collapsing
+  useEffect(() => {
+    if (!showPurchases) {
+      setVisibleCount(PAGE_SIZE);
+    }
+  }, [showPurchases]);
+
+  // Keep pagination sane when entries change
+  useEffect(() => {
+    setVisibleCount((v) =>
+      Math.min(Math.max(PAGE_SIZE, v), entries.length || PAGE_SIZE)
+    );
+  }, [entries.length]);
+
   const coinById = useMemo(() => {
     const map: Record<string, number> = {};
     for (const c of coins) {
-      map[c.id] = (c.fineWeightGrams ?? 0) / TROY_OZ_GRAMS;
+      map[c.id] = (c.fineWeightGrams ?? 0) / TROY_OZ_GRAMS; // fine oz per unit
     }
     return map;
   }, [coins]);
@@ -79,9 +127,9 @@ export default function HomeScreen() {
   const spot = currency === "ZAR" ? spotZar : spotUsd;
   const portfolioValue = spot > 0 ? totalOz * spot : 0;
 
-  /* --------- My Stack (donut) --------- */
+  /* --------- My Stack (conviction bars) --------- */
 
-  const stackSlices = useMemo(() => {
+  const stackRows = useMemo(() => {
     const byId: Record<string, number> = {};
     for (const e of entries) {
       byId[e.coinTypeId] =
@@ -89,158 +137,250 @@ export default function HomeScreen() {
         e.quantity * (coinById[e.coinTypeId] ?? 0);
     }
 
-    const total = Object.values(byId).reduce((a, b) => a + b, 0) || 1;
     return Object.entries(byId)
       .map(([id, oz]) => ({
         id,
         name: coins.find((c) => c.id === id)?.name ?? "Unknown",
-        pct: oz / total,
+        oz,
       }))
-      .sort((a, b) => b.pct - a.pct)
-      .slice(0, 5);
+      .filter((r) => Number.isFinite(r.oz) && r.oz > 0)
+      .sort((a, b) => b.oz - a.oz);
   }, [entries, coinById, coins]);
+
+  /* --------- Purchases list (paged) --------- */
+
+  const purchaseRows = useMemo(() => {
+    return entries
+      .slice()
+      .sort((a, b) => b.purchasedAt - a.purchasedAt)
+      .map((e) => {
+        const coin = getCoin(e.coinTypeId);
+        return {
+          id: e.id,
+          coinName: coin?.name ?? "Unknown coin",
+          quantity: e.quantity,
+          totalPaid: e.totalPaid,
+          purchasedAt: e.purchasedAt,
+        };
+      });
+  }, [entries, getCoin]);
+
+  const visiblePurchases = showPurchases
+    ? purchaseRows.slice(0, visibleCount)
+    : [];
+  const canLoadMore = showPurchases && visibleCount < purchaseRows.length;
 
   /* ---------------- render ---------------- */
 
   return (
-    <ScrollView
-      contentContainerStyle={styles.container}
-      refreshControl={
-        <RefreshControl refreshing={isLoading} onRefresh={refreshSpot} />
-      }
-    >
-      {/* Hero */}
-      <View style={styles.hero}>
-        <View style={styles.heroHeader}>
-          <Text style={styles.appTitle}>Stackd</Text>
-          <Pressable onPress={() => router.push("/settings")}>
-            <Ionicons name="settings-outline" size={22} />
-          </Pressable>
-        </View>
-
-        <Text style={styles.heroValue}>
-          {portfolioValue > 0 ? formatCurrency(portfolioValue, currency) : "—"}
-        </Text>
-
-        <Text style={styles.heroSub}>
-          {formatWeight(totalOz, unit)} • {currency}/oz •{" "}
-          {fetchedAt ? "updated" : "tap refresh"}
-        </Text>
-      </View>
-
-      {/* My Stack */}
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>My Stack</Text>
-
-        <View style={styles.donutWrap}>
-          <Svg width={180} height={180} viewBox="0 0 100 100">
-            <G rotation="-90" origin="50,50">
-              {renderDonut(stackSlices)}
-            </G>
-          </Svg>
-        </View>
-
-        {stackSlices.map((s) => (
-          <View key={s.id} style={styles.sliceRow}>
-            <Text style={styles.sliceName}>{s.name}</Text>
-            <Text style={styles.slicePct}>
-              {Math.round(s.pct * 100)}%
-            </Text>
-          </View>
-        ))}
-      </View>
-
-      {/* CTA */}
-      <Pressable
-        onPress={() => router.push("/stack/add")}
-        style={styles.cta}
+    <SafeAreaView style={styles.safe} edges={["top"]}>
+      <ScrollView
+        contentContainerStyle={styles.container}
+        refreshControl={
+          <RefreshControl refreshing={isLoading} onRefresh={refreshSpot} />
+        }
       >
-        <Text style={styles.ctaText}>＋ Stack</Text>
-      </Pressable>
-    </ScrollView>
+        {/* Hero */}
+        <View style={styles.hero}>
+          <View style={styles.heroHeader}>
+            <Text style={styles.appTitle}>Stackd</Text>
+            <Pressable
+              onPress={() => router.push("/settings")}
+              style={({ pressed }) => pressed && { opacity: 0.8 }}
+              hitSlop={8}
+            >
+              <Ionicons name="settings-outline" size={22} color={colors.ink} />
+            </Pressable>
+          </View>
+
+          <Text style={styles.heroValue}>
+            {portfolioValue > 0 ? formatCurrency(portfolioValue, currency) : "—"}
+          </Text>
+
+          <Text style={styles.heroSub}>
+            {formatWeight(totalOz, unit)} • {formatSpot(spot, currency)}/oz •{" "}
+            {fetchedAt ? "updated" : "pull to refresh"}
+          </Text>
+        </View>
+
+        {/* My Stack */}
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>My Stack</Text>
+
+          <View style={{ marginTop: spacing.lg }}>
+            <MyStackConviction unit={unit} slices={stackRows} />
+          </View>
+        </View>
+
+        {/* Purchases (collapsed by default) */}
+        <View style={styles.card}>
+          <View style={styles.cardHeaderRow}>
+            <Text style={styles.cardTitle}>Purchases</Text>
+            <Text style={styles.cardHint}>{purchaseRows.length} total</Text>
+          </View>
+
+          <Pressable
+            onPress={() => setShowPurchases((v) => !v)}
+            style={({ pressed }) => [
+              styles.toggleBtn,
+              pressed && { opacity: 0.9 },
+            ]}
+          >
+            <Text style={styles.toggleText}>
+              {showPurchases ? "Hide purchases" : "View purchases"}
+            </Text>
+            <Ionicons
+              name={showPurchases ? "chevron-up" : "chevron-down"}
+              size={18}
+              color={colors.ink}
+              style={{ opacity: 0.6 }}
+            />
+          </Pressable>
+
+          {showPurchases ? (
+            purchaseRows.length === 0 ? (
+              <Text style={styles.emptyText}>No purchases yet.</Text>
+            ) : (
+              <View style={{ marginTop: spacing.lg, gap: spacing.md }}>
+                {visiblePurchases.map((p) => (
+                  <Pressable
+                    key={p.id}
+                    onPress={() =>
+                      router.push(`/stack/add?entryId=${encodeURIComponent(p.id)}`)
+                    }
+                    style={({ pressed }) => [
+                      styles.purchaseRow,
+                      pressed && { opacity: 0.9 },
+                    ]}
+                  >
+                    <View style={{ flex: 1, gap: spacing.xs }}>
+                      <Text style={styles.purchaseTitle}>{p.coinName}</Text>
+                      <Text style={styles.purchaseSub}>
+                        Qty {p.quantity} • {formatCurrency(p.totalPaid, "ZAR")} •{" "}
+                        {ymd(p.purchasedAt)}
+                      </Text>
+                    </View>
+
+                    <Ionicons
+                      name="chevron-forward"
+                      size={18}
+                      color={colors.ink}
+                      style={{ opacity: 0.45 }}
+                    />
+                  </Pressable>
+                ))}
+
+                {canLoadMore ? (
+                  <Pressable
+                    onPress={() => setVisibleCount((v) => v + PAGE_SIZE)}
+                    style={({ pressed }) => [
+                      styles.loadMoreBtn,
+                      pressed && { opacity: 0.9 },
+                    ]}
+                  >
+                    <Text style={styles.loadMoreText}>
+                      Load more (
+                      {Math.min(visibleCount + PAGE_SIZE, purchaseRows.length)}/
+                      {purchaseRows.length})
+                    </Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            )
+          ) : null}
+        </View>
+
+        {/* CTA */}
+        <Pressable
+          onPress={() => router.push("/stack/add")}
+          style={({ pressed }) => [styles.cta, pressed && { opacity: 0.9 }]}
+        >
+          <Text style={styles.ctaText}>＋ Stack</Text>
+        </Pressable>
+      </ScrollView>
+    </SafeAreaView>
   );
-}
-
-/* ---------------- donut helpers ---------------- */
-
-function renderDonut(slices: { pct: number }[]) {
-  let start = 0;
-  const colors = [
-    "#111",
-    "#333",
-    "#555",
-    "#777",
-    "#999",
-  ];
-
-  return slices.map((s, i) => {
-    const end = start + s.pct * 2 * Math.PI;
-    const path = describeArc(50, 50, 35, start, end);
-    start = end;
-    return (
-      <Path
-        key={i}
-        d={path}
-        stroke={colors[i % colors.length]}
-        strokeWidth={12}
-        fill="none"
-      />
-    );
-  });
-}
-
-function describeArc(x: number, y: number, r: number, start: number, end: number) {
-  const sx = x + r * Math.cos(start);
-  const sy = y + r * Math.sin(start);
-  const ex = x + r * Math.cos(end);
-  const ey = y + r * Math.sin(end);
-  const large = end - start > Math.PI ? 1 : 0;
-
-  return `M ${sx} ${sy} A ${r} ${r} 0 ${large} 1 ${ex} ${ey}`;
 }
 
 /* ---------------- styles ---------------- */
 
 const styles = StyleSheet.create({
-  container: { padding: 16, paddingBottom: 28 },
+  safe: { flex: 1, backgroundColor: colors.surface },
 
-  hero: { marginBottom: 12 },
+  container: { padding: spacing.lg, paddingBottom: spacing.xl + spacing.md },
+
+  hero: { marginBottom: spacing.md },
   heroHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
-    marginBottom: 10,
+    marginBottom: spacing.md,
+    alignItems: "center",
   },
-  appTitle: { fontSize: 22, fontWeight: "700" },
-  heroValue: { fontSize: 36, fontWeight: "800" },
-  heroSub: { opacity: 0.7, marginTop: 6 },
+  appTitle: { ...text.titleM, color: colors.ink },
+
+  heroValue: { ...text.titleXL, color: colors.ink },
+  heroSub: { ...text.body, color: colors.inkMuted, marginTop: spacing.sm },
 
   card: {
-    marginTop: 14,
-    padding: 14,
-    borderRadius: 18,
-    backgroundColor: "rgba(0,0,0,0.06)",
-  },
-  cardTitle: { fontWeight: "800", opacity: 0.75 },
-
-  donutWrap: {
-    alignItems: "center",
-    marginVertical: 14,
+    marginTop: spacing.lg,
+    padding: spacing.lg,
+    borderRadius: radius.lg,
+    backgroundColor: colors.surfaceSoft,
   },
 
-  sliceRow: {
+  cardHeaderRow: {
     flexDirection: "row",
     justifyContent: "space-between",
-    paddingVertical: 6,
+    alignItems: "baseline",
   },
-  sliceName: { fontWeight: "700" },
-  slicePct: { fontWeight: "800" },
+  cardTitle: { ...text.label, color: colors.inkSoft },
+  cardHint: { ...text.hint, color: colors.inkSoft },
+
+  toggleBtn: {
+    marginTop: spacing.lg,
+    paddingVertical: spacing.lg,
+    paddingHorizontal: spacing.lg,
+    borderRadius: radius.md,
+    backgroundColor: "rgba(255,255,255,0.78)",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderWidth: 1,
+    borderColor: "rgba(0,0,0,0.06)",
+  },
+  toggleText: { ...text.titleM, fontSize: 14, color: colors.ink },
+
+  emptyText: { marginTop: spacing.lg, color: colors.inkSoft },
+
+  purchaseRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    padding: spacing.lg,
+    borderRadius: radius.md,
+    backgroundColor: colors.surfaceLift,
+    borderWidth: 1,
+    borderColor: "rgba(0,0,0,0.06)",
+  },
+  purchaseTitle: { ...text.titleM, fontSize: 14, color: colors.ink },
+  purchaseSub: { ...text.body, fontSize: 12, color: colors.inkMuted },
+
+  loadMoreBtn: {
+    paddingVertical: spacing.lg,
+    borderRadius: radius.md,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: "rgba(255,255,255,0.62)",
+  },
+  loadMoreText: { ...text.label, color: colors.inkSoft },
 
   cta: {
-    marginTop: 18,
-    paddingVertical: 14,
-    borderRadius: 16,
+    marginTop: spacing.lg,
+    paddingVertical: spacing.lg,
+    borderRadius: radius.lg,
     alignItems: "center",
     backgroundColor: "rgba(0,0,0,0.14)",
   },
-  ctaText: { fontSize: 16, fontWeight: "900" },
+  ctaText: { ...text.titleM, fontSize: 16, color: colors.ink },
 });

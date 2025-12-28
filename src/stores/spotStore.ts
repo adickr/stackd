@@ -1,148 +1,101 @@
+// src/stores/spotStore.ts
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+
 import { fetchSilverPerOz } from "../services/spot";
-import { useSettingsStore } from "./settingsStore";
-import { useSpotHistoryStore } from "./spotHistoryStore";
+
+export type SpotHistoryPoint = {
+  t: number; // day start (ms)
+  zarPerOz: number;
+  usdPerOz: number;
+};
 
 type SpotState = {
   silverZarPerOz: number;
   silverUsdPerOz: number;
-
-  fetchedAt?: number;
-  source?: string;
-
+  fetchedAt: number | null;
   isLoading: boolean;
-  error?: string;
 
-  nextAllowedAt?: number; // cooldown until this timestamp
+  // ✅ needed for the line chart
+  history: SpotHistoryPoint[];
 
-  refreshSpot: (opts?: { force?: boolean }) => Promise<void>;
-  clear: () => void;
+  refreshSpot: () => Promise<void>;
 };
 
-const TTL_MS = 60_000; // 60s: no refetch unless force
-const COOLDOWN_MS = 15 * 60_000; // 15 min after rate-limit
+function dayStart(ms: number) {
+  const d = new Date(ms);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
 
-const DEFAULTS: Pick<
-  SpotState,
-  | "silverZarPerOz"
-  | "silverUsdPerOz"
-  | "fetchedAt"
-  | "source"
-  | "isLoading"
-  | "error"
-  | "nextAllowedAt"
-> = {
-  silverZarPerOz: 0,
-  silverUsdPerOz: 0,
-  fetchedAt: undefined,
-  source: undefined,
-  isLoading: false,
-  error: undefined,
-  nextAllowedAt: undefined,
-};
+function upsertDailyPoint(history: SpotHistoryPoint[], point: SpotHistoryPoint) {
+  const idx = history.findIndex((p) => p.t === point.t);
 
-function isRateLimitMessage(msg: string) {
-  return /rate limit|too many requests|429/i.test(msg);
+  if (idx >= 0) {
+    const next = history.slice();
+    next[idx] = point;
+    return next;
+  }
+
+  const next = [...history, point].sort((a, b) => a.t - b.t);
+  const MAX = 365;
+  return next.length > MAX ? next.slice(next.length - MAX) : next;
 }
 
 export const useSpotStore = create<SpotState>()(
   persist(
     (set, get) => ({
-      ...DEFAULTS,
+      silverZarPerOz: 0,
+      silverUsdPerOz: 0,
+      fetchedAt: null,
+      isLoading: false,
+      history: [],
 
-      refreshSpot: async (opts) => {
+      refreshSpot: async () => {
         if (get().isLoading) return;
-
-        const now = Date.now();
-
-        // Cooldown guard (after a rate-limit hit)
-        const nextAllowedAt = get().nextAllowedAt;
-        if (!opts?.force && nextAllowedAt && now < nextAllowedAt) {
-          const secs = Math.ceil((nextAllowedAt - now) / 1000);
-          set({ error: `Rate-limited. Try again in ${secs}s.` });
-          return;
-        }
-
-        // TTL cache guard
-        const fetchedAt = get().fetchedAt;
-        if (!opts?.force && fetchedAt && now - fetchedAt < TTL_MS) {
-          return;
-        }
-
-        // Fetch only currently selected currency
-        const currency = useSettingsStore.getState().currency as "ZAR" | "USD";
-
-        set({ isLoading: true, error: undefined });
+        set({ isLoading: true });
 
         try {
-          const r = await fetchSilverPerOz(currency);
+          // Fetch both so switching currency is instant + history supports both
+          const [zar, usd] = await Promise.all([
+            fetchSilverPerOz("ZAR"),
+            fetchSilverPerOz("USD"),
+          ]);
 
-          // Persist daily history snapshot (one per day per currency)
-          useSpotHistoryStore.getState().upsertDaily({
-            currency,
-            silverPerOz: r.perOz,
-            source: r.source,
-            updatedAt: Date.now(),
-          });
+          const now = Date.now();
+          const today = dayStart(now);
 
-          if (currency === "ZAR") {
-            set({
-              silverZarPerOz: r.perOz,
-              fetchedAt: r.fetchedAt,
-              source: r.source,
-              isLoading: false,
-              error: undefined,
-              nextAllowedAt: undefined,
-            });
-          } else {
-            set({
-              silverUsdPerOz: r.perOz,
-              fetchedAt: r.fetchedAt,
-              source: r.source,
-              isLoading: false,
-              error: undefined,
-              nextAllowedAt: undefined,
-            });
-          }
-        } catch (e: any) {
-          const msg = e?.message ?? "Failed to fetch spot";
-          set({
+          set((state) => ({
+            ...state,
+            silverZarPerOz: zar.perOz,
+            silverUsdPerOz: usd.perOz,
+            fetchedAt: Math.max(zar.fetchedAt, usd.fetchedAt),
             isLoading: false,
-            error: msg,
-            nextAllowedAt: isRateLimitMessage(msg) ? Date.now() + COOLDOWN_MS : undefined,
-          });
+            history: upsertDailyPoint(state.history, {
+              t: today,
+              zarPerOz: zar.perOz,
+              usdPerOz: usd.perOz,
+            }),
+          }));
+        } catch (err) {
+          // keep existing values, just stop loading
+          set({ isLoading: false });
+          console.warn("refreshSpot failed:", err);
         }
       },
-
-      clear: () => set({ ...DEFAULTS }),
     }),
     {
-      name: "stackd:spot",
+      name: "spot-store",
       storage: createJSONStorage(() => AsyncStorage),
-      version: 6,
-      migrate: (persisted: any, version: number) => {
-        if (!persisted) return { ...DEFAULTS };
 
-        if (version === 1) {
-          return {
-            ...DEFAULTS,
-            silverZarPerOz: Number(persisted.silverZarPerOz) || 0,
-            fetchedAt: persisted.fetchedAt,
-            source: persisted.source,
-          };
-        }
-
-        return {
-          ...DEFAULTS,
-          ...persisted,
-          isLoading: false,
-          error: undefined,
-          silverZarPerOz: Number(persisted.silverZarPerOz) || 0,
-          silverUsdPerOz: Number(persisted.silverUsdPerOz) || 0,
-        };
-      },
+      // Persist only serializable data
+      partialize: (s) => ({
+        silverZarPerOz: s.silverZarPerOz,
+        silverUsdPerOz: s.silverUsdPerOz,
+        fetchedAt: s.fetchedAt,
+        history: s.history,
+      }),
     }
   )
 );

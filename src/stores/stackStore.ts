@@ -12,31 +12,53 @@ type StackState = {
   removeEntry: (id: string) => void;
   updateEntry: (
     id: string,
-    patch: Partial<Pick<StackEntry, "quantity" | "totalPaid" | "purchasedAt">>
+    patch: Partial<Pick<StackEntry, "coinTypeId" | "quantity" | "totalPaid" | "purchasedAt">>
   ) => void;
   clearAll: () => void;
 };
+
+function coerceEntries(persisted: any): StackEntry[] {
+  // Some older setups store just an array; others store { entries: [...] }
+  if (Array.isArray(persisted)) return persisted as StackEntry[];
+  if (Array.isArray(persisted?.entries)) return persisted.entries as StackEntry[];
+  if (Array.isArray(persisted?.state?.entries)) return persisted.state.entries as StackEntry[];
+  return [];
+}
 
 export const useStackStore = create<StackState>()(
   persist(
     (set, get) => ({
       entries: [],
+
       addEntry: (entry) =>
         set((state) => ({
           entries: [{ ...entry, id: uid(), createdAt: Date.now() }, ...state.entries],
         })),
+
       getEntry: (id) => (id ? get().entries.find((e) => e.id === id) : undefined),
-      removeEntry: (id) => set((state) => ({ entries: state.entries.filter((e) => e.id !== id) })),
+
+      removeEntry: (id) =>
+        set((state) => ({ entries: state.entries.filter((e) => e.id !== id) })),
+
       updateEntry: (id, patch) =>
         set((state) => ({
           entries: state.entries.map((e) => (e.id === id ? { ...e, ...patch } : e)),
         })),
+
       clearAll: () => set({ entries: [] }),
     }),
     {
       name: "stackd:stack",
       storage: createJSONStorage(() => AsyncStorage),
-      version: 1,
+      version: 2,
+
+      // ✅ This fixes your error
+      migrate: (persistedState: any) => {
+        const entries = coerceEntries(persistedState);
+        return { entries };
+      },
+
+      partialize: (state) => ({ entries: state.entries }),
     }
   )
 );

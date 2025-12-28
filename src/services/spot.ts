@@ -2,7 +2,9 @@
 
 export type SpotCurrency = "ZAR" | "USD";
 
-export async function fetchSilverPerOz(to: SpotCurrency): Promise<{
+export async function fetchSilverPerOz(
+  to: SpotCurrency
+): Promise<{
   perOz: number;
   fetchedAt: number;
   source: string;
@@ -25,12 +27,10 @@ export async function fetchSilverPerOz(to: SpotCurrency): Promise<{
   const data = await res.json().catch(() => null);
 
   if (!res.ok) {
-    // If provider returns 429 etc, include body to help debugging
     throw new Error(`Spot API HTTP ${res.status}: ${JSON.stringify(data)}`);
   }
 
   if (!data?.success) {
-    // typical: {success:false, error:{info:"rate limit reached"...}}
     throw new Error(data?.error?.info ?? "Spot API failed (success=false)");
   }
 
