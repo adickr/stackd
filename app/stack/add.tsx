@@ -7,6 +7,9 @@ import {
   Platform,
   StyleSheet,
   Alert,
+  Keyboard,
+  KeyboardAvoidingView,
+  ScrollView,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -38,7 +41,6 @@ export default function AddStackEntry() {
   const removeEntry = useStackStore((s) => s.removeEntry);
 
   const entryId = params.entryId ? String(params.entryId) : undefined;
-
   const existing = useMemo(() => getEntry(entryId), [entryId, getEntry]);
 
   const [coinTypeId, setCoinTypeId] = useState<string | undefined>();
@@ -109,142 +111,181 @@ export default function AddStackEntry() {
       });
     }
 
+    Keyboard.dismiss();
     router.replace("/");
   };
 
   const confirmDelete = () => {
     if (!entryId) return;
 
-    Alert.alert(
-      "Delete purchase?",
-      "This will remove the purchase from your stack.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: () => {
-            removeEntry(entryId);
-            router.replace("/");
-          },
+    Alert.alert("Delete purchase?", "This will remove the purchase from your stack.", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: () => {
+          removeEntry(entryId);
+          router.replace("/");
         },
-      ]
-    );
+      },
+    ]);
   };
 
   const title = entryId ? "Edit purchase" : "Stack";
-  const subtitle = entryId ? "Update a purchase in your stack." : "Add a purchase to your stack.";
+  const subtitle = entryId
+    ? "Update a purchase in your stack."
+    : "Add a purchase to your stack.";
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
-      <View style={styles.container}>
-        <Text style={styles.title}>{title}</Text>
-        <Text style={styles.subtitle}>{subtitle}</Text>
-
-        {/* More prominent secondary back */}
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={Platform.OS === "ios" ? 6 : 0}
+      >
+        {/* Tap-anywhere-to-dismiss wrapper */}
         <Pressable
-          onPress={() => router.back()}
-          style={({ pressed }) => [styles.backPill, pressed && { opacity: 0.85 }]}
-          hitSlop={8}
+          style={{ flex: 1 }}
+          onPress={() => {
+            Keyboard.dismiss();
+            if (Platform.OS !== "ios") setShowPicker(false);
+          }}
+          accessible={false}
         >
-          <Text style={styles.backPillText}>← Back</Text>
-        </Pressable>
-
-        {/* Coin picker */}
-        <Pressable
-          onPress={() => router.push("/coins/picker")}
-          style={({ pressed }) => [styles.card, pressed && { opacity: 0.9 }]}
-        >
-          <Text style={styles.label}>Coin</Text>
-          <Text style={styles.valueText}>{coin ? coin.name : "Pick a coin"}</Text>
-          {coin ? (
-            <Text style={styles.muted}>
-              Purity {coin.purity} • Fine {coin.fineWeightGrams} g
-            </Text>
-          ) : null}
-        </Pressable>
-
-        {/* Quantity */}
-        <TextInput
-          placeholder="Quantity (e.g. 1)"
-          keyboardType="numeric"
-          value={qty}
-          onChangeText={setQty}
-          style={styles.input}
-        />
-
-        {/* Paid */}
-        <TextInput
-          placeholder="Total paid (ZAR)"
-          keyboardType="numeric"
-          value={paid}
-          onChangeText={setPaid}
-          style={styles.input}
-        />
-
-        {/* Date picker */}
-        <View style={styles.dateBlock}>
-          <Text style={styles.dateTitle}>Date</Text>
-
-          <Pressable
-            onPress={() => setShowPicker(true)}
-            style={({ pressed }) => [styles.input, pressed && { opacity: 0.9 }]}
+          <ScrollView
+            contentContainerStyle={styles.container}
+            keyboardShouldPersistTaps="handled"
           >
-            <Text style={styles.valueText}>{ymdFromDate(pickedDate)}</Text>
-          </Pressable>
+            <Text style={styles.title}>{title}</Text>
+            <Text style={styles.subtitle}>{subtitle}</Text>
 
-          {showPicker ? (
-            <DateTimePicker
-              value={pickedDate}
-              mode="date"
-              display={Platform.OS === "ios" ? "spinner" : "default"}
-              onChange={(event, date) => {
-                if (Platform.OS !== "ios") setShowPicker(false);
-                if (date) setPickedDate(date);
-              }}
-            />
-          ) : null}
-
-          {Platform.OS === "ios" && showPicker ? (
+            {/* More prominent secondary back */}
             <Pressable
-              onPress={() => setShowPicker(false)}
-              style={({ pressed }) => [styles.primaryBtn, pressed && { opacity: 0.9 }]}
+              onPress={() => {
+                Keyboard.dismiss();
+                router.back();
+              }}
+              style={({ pressed }) => [styles.backPill, pressed && { opacity: 0.85 }]}
+              hitSlop={8}
             >
-              <Text style={styles.primaryText}>Done</Text>
+              <Text style={styles.backPillText}>← Back</Text>
             </Pressable>
-          ) : null}
-        </View>
 
-        {/* Save */}
-        <Pressable
-          onPress={save}
-          disabled={!canSave}
-          style={({ pressed }) => [
-            styles.saveBtn,
-            !canSave && styles.saveBtnDisabled,
-            pressed && canSave && { opacity: 0.9 },
-          ]}
-        >
-          <Text style={styles.saveText}>{entryId ? "Save changes" : "Stack"}</Text>
+            {/* Coin picker */}
+            <Pressable
+              onPress={() => {
+                Keyboard.dismiss();
+                router.push("/coins/picker");
+              }}
+              style={({ pressed }) => [styles.card, pressed && { opacity: 0.9 }]}
+            >
+              <Text style={styles.label}>Coin</Text>
+              <Text style={styles.valueText}>{coin ? coin.name : "Pick a coin"}</Text>
+              {coin ? (
+                <Text style={styles.muted}>
+                  Purity {coin.purity} • Fine {coin.fineWeightGrams} g
+                </Text>
+              ) : null}
+            </Pressable>
+
+            {/* Quantity */}
+            <Text style={styles.label}>Quantity</Text>
+            <TextInput
+              placeholder="e.g. 1"
+              placeholderTextColor="#777"
+              keyboardType="numeric"
+              value={qty}
+              onChangeText={setQty}
+              style={styles.input}
+              returnKeyType="done"
+            />
+
+            {/* Paid */}
+            <Text style={styles.label}>Total paid (ZAR)</Text>
+            <TextInput
+              placeholder="e.g. 450"
+              placeholderTextColor="#777"
+              keyboardType="numeric"
+              value={paid}
+              onChangeText={setPaid}
+              style={styles.input}
+              returnKeyType="done"
+            />
+
+            {/* Date picker */}
+            <View style={styles.dateBlock}>
+              <Text style={styles.label}>Date</Text>
+
+              <Pressable
+                onPress={() => {
+                  Keyboard.dismiss(); // ✅ close keypad
+                  setShowPicker(true);
+                }}
+                style={({ pressed }) => [styles.input, pressed && { opacity: 0.9 }]}
+              >
+                <Text style={styles.valueText}>{ymdFromDate(pickedDate)}</Text>
+              </Pressable>
+
+              {showPicker ? (
+                <DateTimePicker
+                  value={pickedDate}
+                  mode="date"
+                  display={Platform.OS === "ios" ? "spinner" : "default"}
+                  onChange={(event, date) => {
+                    if (Platform.OS !== "ios") setShowPicker(false);
+                    if (date) setPickedDate(date);
+                  }}
+                />
+              ) : null}
+
+              {Platform.OS === "ios" && showPicker ? (
+                <Pressable
+                  onPress={() => setShowPicker(false)}
+                  style={({ pressed }) => [styles.primaryBtn, pressed && { opacity: 0.9 }]}
+                >
+                  <Text style={styles.primaryText}>Done</Text>
+                </Pressable>
+              ) : null}
+            </View>
+
+            {/* Save */}
+            <Pressable
+              onPress={save}
+              disabled={!canSave}
+              style={({ pressed }) => [
+                styles.saveBtn,
+                !canSave && styles.saveBtnDisabled,
+                pressed && canSave && { opacity: 0.9 },
+              ]}
+            >
+              <Text style={styles.saveText}>{entryId ? "Save changes" : "Stack"}</Text>
+            </Pressable>
+
+            {/* Delete (edit mode only) */}
+            {entryId ? (
+              <Pressable
+                onPress={confirmDelete}
+                style={({ pressed }) => [styles.deleteBtn, pressed && { opacity: 0.9 }]}
+              >
+                <Text style={styles.deleteText}>Delete purchase</Text>
+              </Pressable>
+            ) : null}
+          </ScrollView>
         </Pressable>
-
-        {/* Delete (edit mode only) */}
-        {entryId ? (
-          <Pressable
-            onPress={confirmDelete}
-            style={({ pressed }) => [styles.deleteBtn, pressed && { opacity: 0.9 }]}
-          >
-            <Text style={styles.deleteText}>Delete purchase</Text>
-          </Pressable>
-        ) : null}
-      </View>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: "#fff" },
-  container: { flex: 1, padding: 24, gap: 14 },
+
+  container: {
+    flexGrow: 1,
+    padding: 24,
+    gap: 14,
+    paddingBottom: 32,
+  },
 
   title: { fontSize: 24, fontWeight: "900" },
   subtitle: { color: "#444" },
@@ -267,8 +308,15 @@ const styles = StyleSheet.create({
     padding: 14,
     gap: 6,
   },
-  label: { fontWeight: "800" },
-  valueText: { fontWeight: "700" },
+
+  label: {
+    fontSize: 12,
+    fontWeight: "800",
+    opacity: 0.7,
+    marginTop: 2,
+  },
+
+  valueText: { fontWeight: "700", color: "#111" },
   muted: { color: "#555" },
 
   input: {
@@ -276,10 +324,11 @@ const styles = StyleSheet.create({
     borderColor: "#ddd",
     padding: 12,
     borderRadius: 12,
+    backgroundColor: "#fff",
+    color: "#111",
   },
 
   dateBlock: { gap: 10, marginTop: 6 },
-  dateTitle: { fontWeight: "900" },
 
   primaryBtn: {
     backgroundColor: "#111",

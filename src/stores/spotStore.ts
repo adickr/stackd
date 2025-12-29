@@ -17,10 +17,14 @@ type SpotState = {
   fetchedAt: number | null;
   isLoading: boolean;
 
+  // ✅ for UI states
+  error: string | null;
+
   // ✅ needed for the line chart
   history: SpotHistoryPoint[];
 
   refreshSpot: () => Promise<void>;
+  clearError: () => void;
 };
 
 function dayStart(ms: number) {
@@ -43,6 +47,17 @@ function upsertDailyPoint(history: SpotHistoryPoint[], point: SpotHistoryPoint) 
   return next.length > MAX ? next.slice(next.length - MAX) : next;
 }
 
+function normalizeError(err: unknown) {
+  if (!err) return "Unknown error";
+  if (typeof err === "string") return err;
+  if (err instanceof Error) return err.message || "Request failed";
+  try {
+    return JSON.stringify(err);
+  } catch {
+    return "Request failed";
+  }
+}
+
 export const useSpotStore = create<SpotState>()(
   persist(
     (set, get) => ({
@@ -50,11 +65,14 @@ export const useSpotStore = create<SpotState>()(
       silverUsdPerOz: 0,
       fetchedAt: null,
       isLoading: false,
+      error: null,
       history: [],
+
+      clearError: () => set({ error: null }),
 
       refreshSpot: async () => {
         if (get().isLoading) return;
-        set({ isLoading: true });
+        set({ isLoading: true, error: null });
 
         try {
           // Fetch both so switching currency is instant + history supports both
@@ -72,6 +90,7 @@ export const useSpotStore = create<SpotState>()(
             silverUsdPerOz: usd.perOz,
             fetchedAt: Math.max(zar.fetchedAt, usd.fetchedAt),
             isLoading: false,
+            error: null,
             history: upsertDailyPoint(state.history, {
               t: today,
               zarPerOz: zar.perOz,
@@ -79,8 +98,8 @@ export const useSpotStore = create<SpotState>()(
             }),
           }));
         } catch (err) {
-          // keep existing values, just stop loading
-          set({ isLoading: false });
+          // keep existing values, just stop loading + store error
+          set({ isLoading: false, error: normalizeError(err) });
           console.warn("refreshSpot failed:", err);
         }
       },
@@ -89,7 +108,6 @@ export const useSpotStore = create<SpotState>()(
       name: "spot-store",
       storage: createJSONStorage(() => AsyncStorage),
 
-      // Persist only serializable data
       partialize: (s) => ({
         silverZarPerOz: s.silverZarPerOz,
         silverUsdPerOz: s.silverUsdPerOz,
