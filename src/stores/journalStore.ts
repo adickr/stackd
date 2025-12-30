@@ -4,9 +4,25 @@ import { persist } from "zustand/middleware";
 export type JournalAnchor = {
   id: string;
   createdAt: number;
-  totalValue: number;
-  totalWeightOz: number;
-  note?: string;
+
+  // Snapshot summary
+  totalFineOz: number;
+  spotPrice: number;
+  spotFetchedAt: number;
+  currency: "ZAR" | "USD";
+  stackValue: number;
+
+  levelName: string;
+  levelVersion: string;
+
+  // Verifiability
+  inventoryHash: string;
+  snapshotHash: string;
+
+  // Wallet proof (mock for now)
+  walletAddress: string;
+  signature: string; // mock signature string
+  signMessage: string;
 };
 
 type JournalState = {

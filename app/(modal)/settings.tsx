@@ -12,8 +12,34 @@ import { useSpotStore } from "../../src/stores/spotStore";
 import { useStackStore } from "../../src/stores/stackStore";
 import { useCoinStore } from "../../src/stores/coinStore";
 import { useJournalStore } from "../../src/stores/journalStore";
+import { useAccountStore } from "../../src/stores/accountStore";
+
+import { hashObject, mockSignMessage } from "../../src/utils/journalCrypto";
 
 const TROY_OZ_GRAMS = 31.1035;
+
+// Keep stable even if you tweak thresholds later
+const LEVEL_VERSION = "v1";
+
+type StackLevel = { name: string; minOz: number };
+const STACK_LEVELS: StackLevel[] = [
+  { name: "Seed", minOz: 0 },
+  { name: "Starter", minOz: 10 },
+  { name: "Accumulator", minOz: 50 },
+  { name: "Stacker", minOz: 150 },
+  { name: "Vaulted", minOz: 300 },
+  { name: "Stronghold", minOz: 500 },
+  { name: "Hoarder", minOz: 1000 },
+  { name: "Bullion Lord", minOz: 2500 },
+];
+
+function getStackLevel(totalOz: number) {
+  const safe = Number.isFinite(totalOz) ? totalOz : 0;
+  for (let i = STACK_LEVELS.length - 1; i >= 0; i--) {
+    if (safe >= STACK_LEVELS[i].minOz) return STACK_LEVELS[i];
+  }
+  return STACK_LEVELS[0];
+}
 
 export default function SettingsScreen() {
   const router = useRouter();
@@ -27,12 +53,18 @@ export default function SettingsScreen() {
   const refreshSpot = useSpotStore((s) => s.refreshSpot);
   const spotZar = useSpotStore((s) => s.silverZarPerOz);
   const spotUsd = useSpotStore((s) => s.silverUsdPerOz);
+  const spotFetchedAt = useSpotStore((s) => s.fetchedAt);
 
   const entries = useStackStore((s) => s.entries);
   const coins = useCoinStore((s) => s.coins);
 
   const addAnchor = useJournalStore((s) => s.addAnchor);
   const anchors = useJournalStore((s) => s.anchors);
+
+  const isConnected = useAccountStore((s) => s.isConnected);
+  const walletAddress = useAccountStore((s) => s.walletAddress);
+  const connectMock = useAccountStore((s) => s.connectMock);
+  const disconnect = useAccountStore((s) => s.disconnect);
 
   // Build fine oz per coin id from coins list
   const fineOzByCoinId = useMemo(() => {
@@ -54,39 +86,89 @@ export default function SettingsScreen() {
   const spot = currency === "ZAR" ? spotZar : spotUsd;
   const portfolioValue = spot > 0 ? totalOz * spot : 0;
 
-  // Normalize snapshot keys to avoid float noise
-  const currentWeightKey = Number(totalOz.toFixed(4)); // 0.0001 oz precision
-  const currentValueKey = Math.round(portfolioValue); // integer currency
+  // Normalize snapshot keys
+  const currentFineOz = Number(totalOz.toFixed(4));
+  const currentStackValue = Math.round(portfolioValue);
+
+  const level = useMemo(() => getStackLevel(currentFineOz), [currentFineOz]);
 
   // Latest anchor by createdAt
   const lastAnchor = useMemo(() => {
     if (!anchors.length) return null;
-    return anchors.reduce((latest, a) => {
-      return a.createdAt > latest.createdAt ? a : latest;
-    }, anchors[0]);
+    return anchors.reduce((latest, a) => (a.createdAt > latest.createdAt ? a : latest), anchors[0]);
   }, [anchors]);
 
-  const lastWeightKey = lastAnchor
-    ? Number(lastAnchor.totalWeightOz.toFixed(4))
-    : null;
-  const lastValueKey = lastAnchor ? Math.round(lastAnchor.totalValue) : null;
+  const lastFineOz = lastAnchor ? Number(lastAnchor.totalFineOz.toFixed(4)) : null;
+  const lastValue = lastAnchor ? Math.round(lastAnchor.stackValue) : null;
 
   const hasStack = entries.length > 0;
-  const hasChangedSinceLastSeal =
-    !lastAnchor ||
-    currentWeightKey !== lastWeightKey ||
-    currentValueKey !== lastValueKey;
 
-  const canSeal = hasStack && hasChangedSinceLastSeal;
+  const hasChangedSinceLastSeal =
+    !lastAnchor || currentFineOz !== lastFineOz || currentStackValue !== lastValue;
+
+  const canSeal = isConnected && !!walletAddress && hasStack && hasChangedSinceLastSeal;
 
   const sealSnapshot = () => {
-    const now = Date.now();
+    if (!walletAddress) return;
+
+    // Inventory hash (stable-ish for mock phase)
+    const inventoryPayload = {
+      coins: [...coins]
+        .map((c) => ({
+          id: c.id,
+          name: c.name,
+          fineWeightGrams: c.fineWeightGrams ?? 0,
+        }))
+        .sort((a, b) => a.id.localeCompare(b.id)),
+      entries: [...entries]
+        .map((e) => ({
+          id: e.id,
+          coinTypeId: e.coinTypeId,
+          quantity: e.quantity,
+          totalPaid: e.totalPaid,
+          purchasedAt: e.purchasedAt,
+        }))
+        .sort((a, b) => a.id.localeCompare(b.id)),
+    };
+
+    const inventoryHash = hashObject(inventoryPayload);
+
+    const snapshotPayload = {
+      createdAt: Date.now(),
+      currency,
+      spotPrice: Number((spot || 0).toFixed(4)),
+      spotFetchedAt: spotFetchedAt ?? 0,
+      totalFineOz: currentFineOz,
+      stackValue: currentStackValue,
+      levelName: level.name,
+      levelVersion: LEVEL_VERSION,
+      inventoryHash,
+    };
+
+    const snapshotHash = hashObject(snapshotPayload);
+
+    const signMessage = `Stackd Journal Seal v1\nsnapshotHash:${snapshotHash}\naddress:${walletAddress}`;
+    const signature = mockSignMessage(signMessage, walletAddress);
+
     addAnchor({
-      id: `${now}-${Math.random().toString(16).slice(2)}`,
-      createdAt: now,
-      totalValue: currentValueKey,
-      totalWeightOz: currentWeightKey,
-      // note: currency, // optional
+      id: `${snapshotPayload.createdAt}-${Math.random().toString(16).slice(2)}`,
+      createdAt: snapshotPayload.createdAt,
+
+      totalFineOz: snapshotPayload.totalFineOz,
+      spotPrice: snapshotPayload.spotPrice,
+      spotFetchedAt: snapshotPayload.spotFetchedAt,
+      currency: snapshotPayload.currency,
+      stackValue: snapshotPayload.stackValue,
+
+      levelName: snapshotPayload.levelName,
+      levelVersion: snapshotPayload.levelVersion,
+
+      inventoryHash,
+      snapshotHash,
+
+      walletAddress,
+      signature,
+      signMessage,
     });
   };
 
@@ -126,13 +208,44 @@ export default function SettingsScreen() {
             ]}
             onChange={(v) => {
               setCurrency(v);
-              refreshSpot(); // refresh after switching currency
+              refreshSpot();
             }}
           />
           <Text style={styles.helper}>Spot refreshes when you switch currency.</Text>
         </Section>
 
-        {/* Journal controls */}
+        <Section title="Account">
+          {!isConnected ? (
+            <Pressable
+              onPress={connectMock}
+              style={({ pressed }) => [styles.navBtn, pressed && { opacity: 0.85 }]}
+            >
+              <Text style={styles.navText}>Connect wallet</Text>
+            </Pressable>
+          ) : (
+            <>
+              <View style={styles.accountPill}>
+                <Text style={styles.accountText} numberOfLines={1}>
+                  Connected: {walletAddress}
+                </Text>
+              </View>
+
+              <Pressable
+                onPress={disconnect}
+                style={({ pressed }) => [
+                  styles.navBtn,
+                  { marginTop: 10, opacity: pressed ? 0.85 : 1 },
+                ]}
+              >
+                <Text style={styles.navText}>Disconnect</Text>
+              </Pressable>
+            </>
+          )}
+          <Text style={styles.helper}>
+            Wallet connection unlocks journal sealing and backups.
+          </Text>
+        </Section>
+
         <Section title="Journal">
           <Pressable
             onPress={() => router.push("../journal")}
@@ -152,22 +265,26 @@ export default function SettingsScreen() {
               },
             ]}
           >
-            <Text style={styles.navText}>{canSeal ? "Seal snapshot" : "Sealed ✓"}</Text>
+            <Text style={styles.navText}>
+              {canSeal ? "Seal & sign snapshot" : "Sealed ✓"}
+            </Text>
           </Pressable>
 
           <Text style={styles.helper}>
-            {hasStack
-              ? canSeal
-                ? "Seal a snapshot of your current stack (value + weight)."
-                : "Latest snapshot matches your current stack."
-              : "Add metal to your stack to enable sealing."}
+            {!isConnected
+              ? "Connect wallet to unlock sealing."
+              : !hasStack
+              ? "Add metal to your stack to enable sealing."
+              : canSeal
+              ? "Creates a signed seal of your stack + inventory hash."
+              : "Latest signed seal matches your current stack."}
           </Text>
         </Section>
 
         <Pressable
           onPress={() => {
             reset();
-            refreshSpot(); // ✅ no args
+            refreshSpot();
           }}
           style={({ pressed }) => [styles.resetBtn, pressed && { opacity: 0.85 }]}
         >
@@ -228,7 +345,6 @@ function Segmented<T extends string>({
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: "#fff" },
-
   container: { flex: 1, padding: 16 },
 
   headerRow: {
@@ -237,7 +353,6 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     marginBottom: 18,
   },
-
   title: { fontSize: 22, fontWeight: "800" },
 
   doneBtn: { alignSelf: "flex-start" },
@@ -282,6 +397,14 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.10)",
   },
   navText: { fontSize: 14, fontWeight: "900", opacity: 0.85 },
+
+  accountPill: {
+    borderRadius: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    backgroundColor: "rgba(0,0,0,0.08)",
+  },
+  accountText: { fontSize: 12, fontWeight: "800", opacity: 0.75 },
 
   resetBtn: {
     marginTop: 6,
