@@ -1,5 +1,5 @@
 import React, { useMemo } from "react";
-import { View, Text, Pressable, StyleSheet } from "react-native";
+import { View, Text, Pressable, StyleSheet, Alert } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 
@@ -14,7 +14,7 @@ import { useCoinStore } from "../../src/stores/coinStore";
 import { useJournalStore } from "../../src/stores/journalStore";
 import { useAccountStore } from "../../src/stores/accountStore";
 
-import { hashObject, mockSignMessage } from "../../src/utils/journalCrypto";
+import { hashObject } from "../../src/utils/journalCrypto";
 
 const TROY_OZ_GRAMS = 31.1035;
 
@@ -41,6 +41,15 @@ function getStackLevel(totalOz: number) {
   return STACK_LEVELS[0];
 }
 
+function isUserCancel(err: any) {
+  const msg = String(err?.message ?? err);
+  return (
+    msg.includes("CancellationException") ||
+    msg.toLowerCase().includes("cancel") ||
+    msg === "USER_CANCELLED"
+  );
+}
+
 export default function SettingsScreen() {
   const router = useRouter();
 
@@ -61,10 +70,14 @@ export default function SettingsScreen() {
   const addAnchor = useJournalStore((s) => s.addAnchor);
   const anchors = useJournalStore((s) => s.anchors);
 
+  // ✅ new: inventory backup storage
+  const upsertInventory = useJournalStore((s) => s.upsertInventory);
+
   const isConnected = useAccountStore((s) => s.isConnected);
   const walletAddress = useAccountStore((s) => s.walletAddress);
-  const connectMock = useAccountStore((s) => s.connectMock);
+  const connect = useAccountStore((s) => s.connect);
   const disconnect = useAccountStore((s) => s.disconnect);
+  const signMessage = useAccountStore((s) => s.signMessage);
 
   // Build fine oz per coin id from coins list
   const fineOzByCoinId = useMemo(() => {
@@ -85,6 +98,7 @@ export default function SettingsScreen() {
 
   const spot = currency === "ZAR" ? spotZar : spotUsd;
   const portfolioValue = spot > 0 ? totalOz * spot : 0;
+  const hasSpot = Number.isFinite(spot) && spot > 0;
 
   // Normalize snapshot keys
   const currentFineOz = Number(totalOz.toFixed(4));
@@ -95,10 +109,15 @@ export default function SettingsScreen() {
   // Latest anchor by createdAt
   const lastAnchor = useMemo(() => {
     if (!anchors.length) return null;
-    return anchors.reduce((latest, a) => (a.createdAt > latest.createdAt ? a : latest), anchors[0]);
+    return anchors.reduce(
+      (latest, a) => (a.createdAt > latest.createdAt ? a : latest),
+      anchors[0]
+    );
   }, [anchors]);
 
-  const lastFineOz = lastAnchor ? Number(lastAnchor.totalFineOz.toFixed(4)) : null;
+  const lastFineOz = lastAnchor
+    ? Number(lastAnchor.totalFineOz.toFixed(4))
+    : null;
   const lastValue = lastAnchor ? Math.round(lastAnchor.stackValue) : null;
 
   const hasStack = entries.length > 0;
@@ -106,20 +125,32 @@ export default function SettingsScreen() {
   const hasChangedSinceLastSeal =
     !lastAnchor || currentFineOz !== lastFineOz || currentStackValue !== lastValue;
 
-  const canSeal = isConnected && !!walletAddress && hasStack && hasChangedSinceLastSeal;
+  const canSeal =
+    isConnected &&
+    !!walletAddress &&
+    hasStack &&
+    hasSpot &&
+    hasChangedSinceLastSeal;
 
-  const sealSnapshot = () => {
+  const sealSnapshot = async () => {
     if (!walletAddress) return;
 
-    // Inventory hash (stable-ish for mock phase)
     const inventoryPayload = {
       coins: [...coins]
-        .map((c) => ({
-          id: c.id,
-          name: c.name,
-          fineWeightGrams: c.fineWeightGrams ?? 0,
-        }))
-        .sort((a, b) => a.id.localeCompare(b.id)),
+  .map((c) => ({
+    id: c.id,
+    name: c.name,
+    metal: c.metal,                 // "silver"
+    purity: c.purity,               // number
+    fineWeightGrams: c.fineWeightGrams ?? 0,
+    diameterMm: c.diameterMm,
+    thicknessMm: c.thicknessMm,
+    hallmarks: c.hallmarks ?? [],
+    notes: c.notes,
+    createdAt: c.createdAt,
+  }))
+  .sort((a, b) => a.id.localeCompare(b.id)),
+
       entries: [...entries]
         .map((e) => ({
           id: e.id,
@@ -147,8 +178,27 @@ export default function SettingsScreen() {
 
     const snapshotHash = hashObject(snapshotPayload);
 
-    const signMessage = `Stackd Journal Seal v1\nsnapshotHash:${snapshotHash}\naddress:${walletAddress}`;
-    const signature = mockSignMessage(signMessage, walletAddress);
+    const signText =
+      `Stackd Journal Seal v1\n` +
+      `snapshotHash:${snapshotHash}\n` +
+      `address:${walletAddress}`;
+
+    let signature: string;
+    try {
+      signature = await signMessage(signText); // ✅ real wallet signature (base64)
+    } catch (e: any) {
+      if (isUserCancel(e)) return;
+      Alert.alert("Signing failed", e?.message ?? String(e));
+      return;
+    }
+
+    // ✅ persist backup blob (used later for restore)
+    upsertInventory({
+      inventoryHash,
+      createdAt: snapshotPayload.createdAt,
+      coins: inventoryPayload.coins,
+      entries: inventoryPayload.entries,
+    });
 
     addAnchor({
       id: `${snapshotPayload.createdAt}-${Math.random().toString(16).slice(2)}`,
@@ -168,7 +218,7 @@ export default function SettingsScreen() {
 
       walletAddress,
       signature,
-      signMessage,
+      signMessage: signText,
     });
   };
 
@@ -217,7 +267,14 @@ export default function SettingsScreen() {
         <Section title="Account">
           {!isConnected ? (
             <Pressable
-              onPress={connectMock}
+              onPress={async () => {
+                try {
+                  await connect();
+                } catch (e: any) {
+                  if (isUserCancel(e)) return;
+                  Alert.alert("Wallet connect failed", e?.message ?? String(e));
+                }
+              }}
               style={({ pressed }) => [styles.navBtn, pressed && { opacity: 0.85 }]}
             >
               <Text style={styles.navText}>Connect wallet</Text>
@@ -248,14 +305,14 @@ export default function SettingsScreen() {
 
         <Section title="Journal">
           <Pressable
-            onPress={() => router.push("../journal")}
+            onPress={() => router.push("/journal")}
             style={({ pressed }) => [styles.navBtn, pressed && { opacity: 0.85 }]}
           >
             <Text style={styles.navText}>Open Journal</Text>
           </Pressable>
 
           <Pressable
-            onPress={sealSnapshot}
+            onPress={() => sealSnapshot()}
             disabled={!canSeal}
             style={({ pressed }) => [
               styles.navBtn,
@@ -275,6 +332,8 @@ export default function SettingsScreen() {
               ? "Connect wallet to unlock sealing."
               : !hasStack
               ? "Add metal to your stack to enable sealing."
+              : !hasSpot
+              ? "Pull to refresh to fetch spot before sealing."
               : canSeal
               ? "Creates a signed seal of your stack + inventory hash."
               : "Latest signed seal matches your current stack."}
@@ -333,7 +392,12 @@ function Segmented<T extends string>({
               pressed && { opacity: 0.9 },
             ]}
           >
-            <Text style={[styles.segmentText, active && styles.segmentTextActive]}>
+            <Text
+              style={[
+                styles.segmentText,
+                active && styles.segmentTextActive,
+              ]}
+            >
               {opt.label}
             </Text>
           </Pressable>

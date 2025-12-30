@@ -1,9 +1,11 @@
+// src/stores/stackStore.ts
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { StackEntry } from "../domain/stackEntry";
 
-const uid = () => Math.random().toString(36).slice(2) + "-" + Date.now().toString(36);
+const uid = () =>
+  Math.random().toString(36).slice(2) + "-" + Date.now().toString(36);
 
 type StackState = {
   entries: StackEntry[];
@@ -12,16 +14,21 @@ type StackState = {
   removeEntry: (id: string) => void;
   updateEntry: (
     id: string,
-    patch: Partial<Pick<StackEntry, "coinTypeId" | "quantity" | "totalPaid" | "purchasedAt">>
+    patch: Partial<
+      Pick<StackEntry, "coinTypeId" | "quantity" | "totalPaid" | "purchasedAt">
+    >
   ) => void;
   clearAll: () => void;
+
+  // ✅ NEW: restore support
+  replaceAll: (entries: StackEntry[]) => void;
 };
 
 function coerceEntries(persisted: any): StackEntry[] {
-  // Some older setups store just an array; others store { entries: [...] }
   if (Array.isArray(persisted)) return persisted as StackEntry[];
   if (Array.isArray(persisted?.entries)) return persisted.entries as StackEntry[];
-  if (Array.isArray(persisted?.state?.entries)) return persisted.state.entries as StackEntry[];
+  if (Array.isArray(persisted?.state?.entries))
+    return persisted.state.entries as StackEntry[];
   return [];
 }
 
@@ -46,13 +53,19 @@ export const useStackStore = create<StackState>()(
         })),
 
       clearAll: () => set({ entries: [] }),
+
+      // ✅ NEW: used by Journal restore
+      replaceAll: (entriesFromBackup) => {
+        const safe = Array.isArray(entriesFromBackup) ? entriesFromBackup : [];
+        // keep as-is (ids/timestamps matter); just overwrite
+        set({ entries: safe });
+      },
     }),
     {
       name: "stackd:stack",
       storage: createJSONStorage(() => AsyncStorage),
       version: 2,
 
-      // ✅ This fixes your error
       migrate: (persistedState: any) => {
         const entries = coerceEntries(persistedState);
         return { entries };

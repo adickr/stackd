@@ -20,6 +20,9 @@ type CoinState = {
 
   searchCoins: (query: string) => CoinType[];
   clearAll: () => void;
+
+  // ✅ NEW: restore support
+  replaceAll: (coins: CoinType[]) => void;
 };
 
 /* ---------------- utils ---------------- */
@@ -408,12 +411,19 @@ export const useCoinStore = create<CoinState>()(
       },
 
       clearAll: () => set({ coins: [] }),
+
+      // ✅ NEW: used by Journal restore
+      replaceAll: (coinsFromBackup) => {
+        // Safety: always keep seeds, and dedupe by name
+        const merged = mergeSeeds(Array.isArray(coinsFromBackup) ? coinsFromBackup : []);
+        set({ coins: merged });
+      },
     }),
     {
       name: "stackd:coins",
       storage: createJSONStorage(() => AsyncStorage),
 
-      // ✅ bump version so migrate runs and removes the duplicate ASE
+      // keep your existing migrate/versioning
       version: 6,
 
       migrate: (persisted) => {
@@ -426,7 +436,6 @@ export const useCoinStore = create<CoinState>()(
 
       partialize: (state) => ({ coins: state.coins }),
 
-      // ✅ seed AFTER hydration to prevent overwrite-to-empty problems
       onRehydrateStorage: () => () => {
         useCoinStore.setState({ hasHydrated: true });
         useCoinStore.getState().seedIfEmpty();
