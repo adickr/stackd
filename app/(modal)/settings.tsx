@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useMemo } from "react";
 import { View, Text, Pressable, StyleSheet } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
@@ -9,6 +9,11 @@ import {
   DisplayCurrency,
 } from "../../src/stores/settingsStore";
 import { useSpotStore } from "../../src/stores/spotStore";
+import { useStackStore } from "../../src/stores/stackStore";
+import { useCoinStore } from "../../src/stores/coinStore";
+import { useJournalStore } from "../../src/stores/journalStore";
+
+const TROY_OZ_GRAMS = 31.1035;
 
 export default function SettingsScreen() {
   const router = useRouter();
@@ -20,6 +25,70 @@ export default function SettingsScreen() {
   const reset = useSettingsStore((s) => s.reset);
 
   const refreshSpot = useSpotStore((s) => s.refreshSpot);
+  const spotZar = useSpotStore((s) => s.silverZarPerOz);
+  const spotUsd = useSpotStore((s) => s.silverUsdPerOz);
+
+  const entries = useStackStore((s) => s.entries);
+  const coins = useCoinStore((s) => s.coins);
+
+  const addAnchor = useJournalStore((s) => s.addAnchor);
+  const anchors = useJournalStore((s) => s.anchors);
+
+  // Build fine oz per coin id from coins list
+  const fineOzByCoinId = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const c of coins) {
+      map[c.id] = (c.fineWeightGrams ?? 0) / TROY_OZ_GRAMS;
+    }
+    return map;
+  }, [coins]);
+
+  // Total fine oz in stack
+  const totalOz = useMemo(() => {
+    return entries.reduce(
+      (sum, e) => sum + e.quantity * (fineOzByCoinId[e.coinTypeId] ?? 0),
+      0
+    );
+  }, [entries, fineOzByCoinId]);
+
+  const spot = currency === "ZAR" ? spotZar : spotUsd;
+  const portfolioValue = spot > 0 ? totalOz * spot : 0;
+
+  // Normalize snapshot keys to avoid float noise
+  const currentWeightKey = Number(totalOz.toFixed(4)); // 0.0001 oz precision
+  const currentValueKey = Math.round(portfolioValue); // integer currency
+
+  // Latest anchor by createdAt
+  const lastAnchor = useMemo(() => {
+    if (!anchors.length) return null;
+    return anchors.reduce((latest, a) => {
+      return a.createdAt > latest.createdAt ? a : latest;
+    }, anchors[0]);
+  }, [anchors]);
+
+  const lastWeightKey = lastAnchor
+    ? Number(lastAnchor.totalWeightOz.toFixed(4))
+    : null;
+  const lastValueKey = lastAnchor ? Math.round(lastAnchor.totalValue) : null;
+
+  const hasStack = entries.length > 0;
+  const hasChangedSinceLastSeal =
+    !lastAnchor ||
+    currentWeightKey !== lastWeightKey ||
+    currentValueKey !== lastValueKey;
+
+  const canSeal = hasStack && hasChangedSinceLastSeal;
+
+  const sealSnapshot = () => {
+    const now = Date.now();
+    addAnchor({
+      id: `${now}-${Math.random().toString(16).slice(2)}`,
+      createdAt: now,
+      totalValue: currentValueKey,
+      totalWeightOz: currentWeightKey,
+      // note: currency, // optional
+    });
+  };
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
@@ -61,6 +130,38 @@ export default function SettingsScreen() {
             }}
           />
           <Text style={styles.helper}>Spot refreshes when you switch currency.</Text>
+        </Section>
+
+        {/* Journal controls */}
+        <Section title="Journal">
+          <Pressable
+            onPress={() => router.push("../journal")}
+            style={({ pressed }) => [styles.navBtn, pressed && { opacity: 0.85 }]}
+          >
+            <Text style={styles.navText}>Open Journal</Text>
+          </Pressable>
+
+          <Pressable
+            onPress={sealSnapshot}
+            disabled={!canSeal}
+            style={({ pressed }) => [
+              styles.navBtn,
+              {
+                marginTop: 10,
+                opacity: !canSeal ? 0.45 : pressed ? 0.85 : 1,
+              },
+            ]}
+          >
+            <Text style={styles.navText}>{canSeal ? "Seal snapshot" : "Sealed ✓"}</Text>
+          </Pressable>
+
+          <Text style={styles.helper}>
+            {hasStack
+              ? canSeal
+                ? "Seal a snapshot of your current stack (value + weight)."
+                : "Latest snapshot matches your current stack."
+              : "Add metal to your stack to enable sealing."}
+          </Text>
         </Section>
 
         <Pressable
@@ -172,6 +273,15 @@ const styles = StyleSheet.create({
   segmentTextActive: { opacity: 1 },
 
   helper: { marginTop: 10, fontSize: 12, opacity: 0.65 },
+
+  navBtn: {
+    borderRadius: 16,
+    paddingVertical: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.10)",
+  },
+  navText: { fontSize: 14, fontWeight: "900", opacity: 0.85 },
 
   resetBtn: {
     marginTop: 6,

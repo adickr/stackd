@@ -17,6 +17,7 @@ import { useCoinStore } from "../src/stores/coinStore";
 import { useSpotStore } from "../src/stores/spotStore";
 import { useSettingsStore } from "../src/stores/settingsStore";
 
+
 import { MyStackConviction } from "../src/components/MyStackConviction";
 
 // tokens
@@ -118,6 +119,7 @@ export default function HomeScreen() {
   const spotError = useSpotStore((s) => s.error);
   const clearSpotError = useSpotStore((s) => s.clearError);
 
+
   // UI state
   const [showPurchases, setShowPurchases] = useState(false);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
@@ -168,6 +170,7 @@ export default function HomeScreen() {
 
   const spot = currency === "ZAR" ? spotZar : spotUsd;
   const portfolioValue = spot > 0 ? totalOz * spot : 0;
+
 
   // ✅ Hero level chip
   const level = useMemo(() => getStackLevel(totalOz), [totalOz]);
@@ -443,6 +446,7 @@ export default function HomeScreen() {
         >
           <Text style={styles.ctaText}>＋ Stack</Text>
         </Pressable>
+
       </ScrollView>
     </SafeAreaView>
   );
