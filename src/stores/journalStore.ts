@@ -8,7 +8,6 @@ export type JournalAnchor = {
   id: string;
   createdAt: number;
 
-  // Snapshot summary
   totalFineOz: number;
   spotPrice: number;
   spotFetchedAt: number;
@@ -18,13 +17,11 @@ export type JournalAnchor = {
   levelName: string;
   levelVersion: string;
 
-  // Verifiability
   inventoryHash: string;
   snapshotHash: string;
 
-  // Wallet proof
   walletAddress: string;
-  signature: string; // base64 (real wallet) or mock
+  signature: string;
   signMessage: string;
 };
 
@@ -39,31 +36,42 @@ export type InventoryEntryBackup = {
 export type InventoryBackup = {
   inventoryHash: string;
   createdAt: number;
-
-  // ✅ full coin objects for lossless restore
   coins: CoinType[];
-
-  // Minimal stack entry fields to restore purchases
   entries: InventoryEntryBackup[];
+};
+
+export type JournalExportBlobV1 = {
+  schema: "stackd.journal.export";
+  version: 1;
+  exportedAt: number;
+  anchors: JournalAnchor[];
+  inventories: Record<string, InventoryBackup>;
+};
+
+type ImportReport = {
+  anchorsImported: number;
+  inventoriesImported: number;
+  warnings: string[];
 };
 
 type JournalState = {
   anchors: JournalAnchor[];
-
-  // Inventory backups keyed by inventoryHash
   inventories: Record<string, InventoryBackup>;
 
   addAnchor: (anchor: JournalAnchor) => void;
   upsertInventory: (backup: InventoryBackup) => void;
 
   reset: () => void;
+
+  // ✅ NEW
+  exportBlob: () => JournalExportBlobV1;
+  importBlob: (blob: unknown, mode?: "replace" | "merge") => ImportReport;
 };
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === "object" && !Array.isArray(v);
 }
 
-// If we ever persisted "minimal coins" before, upconvert them to CoinType.
 function coerceCoinType(c: unknown): CoinType | null {
   if (!isRecord(c)) return null;
 
@@ -101,7 +109,6 @@ function coerceCoinType(c: unknown): CoinType | null {
 
   const notes = typeof c.notes === "string" ? c.notes : undefined;
 
-  // metal: default to silver if missing/invalid
   const metal =
     typeof c.metal === "string" && c.metal === "silver" ? "silver" : "silver";
 
@@ -160,9 +167,88 @@ function coerceInventoryBackup(b: unknown): InventoryBackup | null {
   return { inventoryHash, createdAt, coins, entries };
 }
 
+function coerceAnchor(a: unknown): JournalAnchor | null {
+  if (!isRecord(a)) return null;
+
+  // required string fields
+  const id = typeof a.id === "string" ? a.id : null;
+  const inventoryHash = typeof a.inventoryHash === "string" ? a.inventoryHash : null;
+  const snapshotHash = typeof a.snapshotHash === "string" ? a.snapshotHash : null;
+  const walletAddress = typeof a.walletAddress === "string" ? a.walletAddress : null;
+  const signature = typeof a.signature === "string" ? a.signature : null;
+  const signMessage = typeof a.signMessage === "string" ? a.signMessage : null;
+  const levelName = typeof a.levelName === "string" ? a.levelName : "";
+  const levelVersion = typeof a.levelVersion === "string" ? a.levelVersion : "v1";
+
+  if (!id || !inventoryHash || !snapshotHash || !walletAddress || !signature || !signMessage)
+    return null;
+
+  const createdAt = typeof a.createdAt === "number" && Number.isFinite(a.createdAt) ? a.createdAt : null;
+  const totalFineOz = typeof a.totalFineOz === "number" && Number.isFinite(a.totalFineOz) ? a.totalFineOz : null;
+  const spotPrice = typeof a.spotPrice === "number" && Number.isFinite(a.spotPrice) ? a.spotPrice : null;
+  const spotFetchedAt = typeof a.spotFetchedAt === "number" && Number.isFinite(a.spotFetchedAt) ? a.spotFetchedAt : 0;
+  const currency = a.currency === "ZAR" || a.currency === "USD" ? a.currency : null;
+  const stackValue = typeof a.stackValue === "number" && Number.isFinite(a.stackValue) ? a.stackValue : null;
+
+  if (createdAt === null || totalFineOz === null || spotPrice === null || currency === null || stackValue === null)
+    return null;
+
+  return {
+    id,
+    createdAt,
+    totalFineOz,
+    spotPrice,
+    spotFetchedAt,
+    currency,
+    stackValue,
+    levelName,
+    levelVersion,
+    inventoryHash,
+    snapshotHash,
+    walletAddress,
+    signature,
+    signMessage,
+  };
+}
+
+function coerceExportBlob(blob: unknown): JournalExportBlobV1 | null {
+  if (!isRecord(blob)) return null;
+
+  // allow either raw store export or wrapped export blob
+  const schema = typeof blob.schema === "string" ? blob.schema : null;
+  const version = typeof blob.version === "number" ? blob.version : null;
+
+  const exportedAt =
+    typeof blob.exportedAt === "number" && Number.isFinite(blob.exportedAt)
+      ? blob.exportedAt
+      : Date.now();
+
+  const anchorsRaw = Array.isArray(blob.anchors) ? blob.anchors : [];
+  const anchors = anchorsRaw.map(coerceAnchor).filter((x): x is JournalAnchor => !!x);
+
+  const inventories: Record<string, InventoryBackup> = {};
+  const rawInv = blob.inventories;
+
+  if (isRecord(rawInv)) {
+    for (const [k, v] of Object.entries(rawInv)) {
+      const coerced = coerceInventoryBackup(v);
+      if (coerced) inventories[k] = coerced;
+    }
+  }
+
+  // If schema/version are missing, still accept as "legacy export"
+  return {
+    schema: schema === "stackd.journal.export" ? "stackd.journal.export" : "stackd.journal.export",
+    version: version === 1 ? 1 : 1,
+    exportedAt,
+    anchors,
+    inventories,
+  };
+}
+
 export const useJournalStore = create<JournalState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       anchors: [],
       inventories: {},
 
@@ -178,17 +264,69 @@ export const useJournalStore = create<JournalState>()(
         })),
 
       reset: () => set({ anchors: [], inventories: {} }),
+
+      // ✅ NEW
+      exportBlob: () => {
+        const { anchors, inventories } = get();
+        return {
+          schema: "stackd.journal.export",
+          version: 1,
+          exportedAt: Date.now(),
+          anchors,
+          inventories,
+        };
+      },
+
+      // ✅ NEW
+      importBlob: (blob, mode = "replace") => {
+        const parsed = coerceExportBlob(blob);
+        if (!parsed) {
+          return { anchorsImported: 0, inventoriesImported: 0, warnings: ["Invalid export file."] };
+        }
+
+        const warnings: string[] = [];
+        const incomingAnchors = parsed.anchors;
+        const incomingInventories = parsed.inventories;
+
+        if (mode === "replace") {
+          set({ anchors: incomingAnchors, inventories: incomingInventories });
+          return {
+            anchorsImported: incomingAnchors.length,
+            inventoriesImported: Object.keys(incomingInventories).length,
+            warnings,
+          };
+        }
+
+        // merge mode: dedupe anchors by id; inventories by key
+        const current = get();
+        const byAnchorId = new Map(current.anchors.map((a) => [a.id, a]));
+        for (const a of incomingAnchors) byAnchorId.set(a.id, a);
+
+        const mergedAnchors = Array.from(byAnchorId.values()).sort((a, b) => a.createdAt - b.createdAt);
+
+        const mergedInventories: Record<string, InventoryBackup> = { ...current.inventories };
+        for (const [k, v] of Object.entries(incomingInventories)) mergedInventories[k] = v;
+
+        set({ anchors: mergedAnchors, inventories: mergedInventories });
+
+        return {
+          anchorsImported: incomingAnchors.length,
+          inventoriesImported: Object.keys(incomingInventories).length,
+          warnings,
+        };
+      },
     }),
     {
       name: "journal-store",
-      version: 3,
+      version: 4,
 
       migrate: (persisted: unknown) => {
-        const raw = isRecord(persisted) && isRecord(persisted.state)
-          ? (persisted.state as Record<string, unknown>)
-          : isRecord(persisted)
-          ? (persisted as Record<string, unknown>)
-          : {};
+        const raw =
+          isRecord(persisted) && isRecord((persisted as any).state)
+            ? ((persisted as any).state as Record<string, unknown>)
+            : isRecord(persisted)
+            ? (persisted as Record<string, unknown>)
+            : {};
 
         const anchors = Array.isArray(raw.anchors)
           ? (raw.anchors as JournalAnchor[])

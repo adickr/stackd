@@ -16,10 +16,12 @@ import { useJournalStore } from "../../src/stores/journalStore";
 import { useAccountStore } from "../../src/stores/accountStore";
 
 import { hashObject } from "../../src/utils/journalCrypto";
+import {
+  exportJournalBackup,
+  importJournalBackup,
+} from "../../src/services/journalBackup";
 
 const TROY_OZ_GRAMS = 31.1035;
-
-// Keep stable even if you tweak thresholds later
 const LEVEL_VERSION = "v1";
 
 type StackLevel = { name: string; minOz: number };
@@ -70,8 +72,6 @@ export default function SettingsScreen() {
 
   const addAnchor = useJournalStore((s) => s.addAnchor);
   const anchors = useJournalStore((s) => s.anchors);
-
-  // ✅ inventory backup storage
   const upsertInventory = useJournalStore((s) => s.upsertInventory);
 
   const isConnected = useAccountStore((s) => s.isConnected);
@@ -80,7 +80,6 @@ export default function SettingsScreen() {
   const disconnect = useAccountStore((s) => s.disconnect);
   const signMessage = useAccountStore((s) => s.signMessage);
 
-  // Build fine oz per coin id from coins list
   const fineOzByCoinId = useMemo(() => {
     const map: Record<string, number> = {};
     for (const c of coins) {
@@ -89,7 +88,6 @@ export default function SettingsScreen() {
     return map;
   }, [coins]);
 
-  // Total fine oz in stack
   const totalOz = useMemo(() => {
     return entries.reduce(
       (sum, e) => sum + e.quantity * (fineOzByCoinId[e.coinTypeId] ?? 0),
@@ -101,13 +99,10 @@ export default function SettingsScreen() {
   const portfolioValue = spot > 0 ? totalOz * spot : 0;
   const hasSpot = Number.isFinite(spot) && spot > 0;
 
-  // Normalize snapshot keys
   const currentFineOz = Number(totalOz.toFixed(4));
   const currentStackValue = Math.round(portfolioValue);
-
   const level = useMemo(() => getStackLevel(currentFineOz), [currentFineOz]);
 
-  // Latest anchor by createdAt
   const lastAnchor = useMemo(() => {
     if (!anchors.length) return null;
     return anchors.reduce(
@@ -122,27 +117,21 @@ export default function SettingsScreen() {
   const lastValue = lastAnchor ? Math.round(lastAnchor.stackValue) : null;
 
   const hasStack = entries.length > 0;
-
   const hasChangedSinceLastSeal =
     !lastAnchor || currentFineOz !== lastFineOz || currentStackValue !== lastValue;
 
   const canSeal =
-    isConnected &&
-    !!walletAddress &&
-    hasStack &&
-    hasSpot &&
-    hasChangedSinceLastSeal;
+    isConnected && !!walletAddress && hasStack && hasSpot && hasChangedSinceLastSeal;
 
   const sealSnapshot = async () => {
     if (!walletAddress) return;
 
-    // ✅ inventory payload: stable ordering
     const inventoryPayload = {
       coins: [...coins]
         .map((c) => ({
           id: c.id,
           name: c.name,
-          metal: c.metal, // "silver"
+          metal: c.metal,
           purity: c.purity,
           fineWeightGrams: c.fineWeightGrams ?? 0,
           diameterMm: c.diameterMm,
@@ -187,19 +176,18 @@ export default function SettingsScreen() {
 
     let signature: string;
     try {
-      signature = await signMessage(signText); // ✅ real wallet signature (base64)
+      signature = await signMessage(signText);
     } catch (e: any) {
       if (isUserCancel(e)) return;
       Alert.alert("Signing failed", e?.message ?? String(e));
       return;
     }
 
-    // ✅ persist backup blob (used later for restore)
     upsertInventory({
       inventoryHash,
       createdAt: snapshotPayload.createdAt,
-      coins: inventoryPayload.coins,
-      entries: inventoryPayload.entries,
+      coins: inventoryPayload.coins as any,
+      entries: inventoryPayload.entries as any,
     });
 
     addAnchor({
@@ -222,6 +210,58 @@ export default function SettingsScreen() {
       signature,
       signMessage: signText,
     });
+  };
+
+  const handleExport = async () => {
+    const res = await exportJournalBackup();
+
+    if (!res.ok) {
+      if (res.reason === "cancelled") return;
+
+      if (res.reason === "unavailable") {
+        Alert.alert(
+          "Export unavailable",
+          res.message ??
+            "Your current app build doesn't support Android export yet. Rebuild/reinstall the dev client."
+        );
+        return;
+      }
+
+      Alert.alert("Export failed", res.message ?? "Unknown error");
+      return;
+    }
+
+    Alert.alert("Exported", "Backup saved. You can now import it on a new phone.");
+  };
+
+  const handleImport = async () => {
+    Alert.alert(
+      "Import backup?",
+      "This will replace your local journal backups on this device.\n\nAfter importing, open Journal → Restore.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Import",
+          style: "destructive",
+          onPress: async () => {
+            const res = await importJournalBackup("replace");
+
+            if (!res.ok) {
+              if (res.reason === "cancelled") return;
+              Alert.alert("Import failed", res.message ?? "Unknown error");
+              return;
+            }
+
+            // ✅ minimal fix: res.report (not res.value)
+            const report = res.report;
+            Alert.alert(
+              "Imported",
+              `Anchors: ${report.anchorsImported}\nInventories: ${report.inventoriesImported}`
+            );
+          },
+        },
+      ]
+    );
   };
 
   return (
@@ -314,6 +354,28 @@ export default function SettingsScreen() {
           </Pressable>
 
           <Pressable
+            onPress={handleExport}
+            style={({ pressed }) => [
+              styles.navBtn,
+              { marginTop: 10 },
+              pressed && { opacity: 0.85 },
+            ]}
+          >
+            <Text style={styles.navText}>Export backup</Text>
+          </Pressable>
+
+          <Pressable
+            onPress={handleImport}
+            style={({ pressed }) => [
+              styles.navBtn,
+              { marginTop: 10 },
+              pressed && { opacity: 0.85 },
+            ]}
+          >
+            <Text style={styles.navText}>Import backup</Text>
+          </Pressable>
+
+          <Pressable
             onPress={() => sealSnapshot()}
             disabled={!canSeal}
             style={({ pressed }) => [
@@ -340,6 +402,11 @@ export default function SettingsScreen() {
               ? "Creates a signed seal of your stack + inventory hash."
               : "Latest signed seal matches your current stack."}
           </Text>
+
+          <Text style={[styles.helper, { marginTop: 8 }]}>
+            Stackd never has access to your wallet keys. Signing is used only to prove
+            ownership and seal journal entries. No funds are moved.
+          </Text>
         </Section>
 
         <Pressable
@@ -356,13 +423,7 @@ export default function SettingsScreen() {
   );
 }
 
-function Section({
-  title,
-  children,
-}: {
-  title: string;
-  children: React.ReactNode;
-}) {
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <View style={styles.section}>
       <Text style={styles.sectionTitle}>{title}</Text>
@@ -394,12 +455,7 @@ function Segmented<T extends string>({
               pressed && { opacity: 0.9 },
             ]}
           >
-            <Text
-              style={[
-                styles.segmentText,
-                active && styles.segmentTextActive,
-              ]}
-            >
+            <Text style={[styles.segmentText, active && styles.segmentTextActive]}>
               {opt.label}
             </Text>
           </Pressable>
