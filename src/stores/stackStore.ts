@@ -7,6 +7,20 @@ import { StackEntry } from "../domain/stackEntry";
 const uid = () =>
   Math.random().toString(36).slice(2) + "-" + Date.now().toString(36);
 
+type ReplaceReport = {
+  applied: number;
+  dropped: number;
+  unknownCoinRefs: number;
+  warnings: string[];
+};
+
+type SafeReplaceOptions = {
+  // if provided, entries referencing coinTypeIds not in this set can be dropped
+  knownCoinIds?: Set<string>;
+  // default true when knownCoinIds is provided
+  dropUnknownCoinRefs?: boolean;
+};
+
 type StackState = {
   entries: StackEntry[];
   addEntry: (entry: Omit<StackEntry, "id" | "createdAt">) => void;
@@ -20,8 +34,10 @@ type StackState = {
   ) => void;
   clearAll: () => void;
 
-  // ✅ NEW: restore support
   replaceAll: (entries: StackEntry[]) => void;
+
+  // ✅ NEW
+  safeReplaceAll: (entries: unknown, opts?: SafeReplaceOptions) => ReplaceReport;
 };
 
 function coerceEntries(persisted: any): StackEntry[] {
@@ -30,6 +46,74 @@ function coerceEntries(persisted: any): StackEntry[] {
   if (Array.isArray(persisted?.state?.entries))
     return persisted.state.entries as StackEntry[];
   return [];
+}
+
+function normalizeEntry(raw: any): StackEntry {
+  const coinTypeId = String(raw?.coinTypeId ?? "");
+  const quantity = Number(raw?.quantity ?? 0);
+  const totalPaid = Number(raw?.totalPaid ?? 0);
+  const purchasedAt = Number(raw?.purchasedAt ?? 0);
+
+  const id = String(raw?.id ?? uid());
+  const createdAt = Number.isFinite(raw?.createdAt) ? Number(raw.createdAt) : Date.now();
+
+  if (!coinTypeId) throw new Error("coinTypeId missing");
+  if (!Number.isFinite(quantity) || quantity <= 0) throw new Error("quantity invalid");
+  if (!Number.isFinite(totalPaid) || totalPaid < 0) throw new Error("totalPaid invalid");
+  if (!Number.isFinite(purchasedAt) || purchasedAt <= 0) throw new Error("purchasedAt invalid");
+
+  const e: StackEntry = {
+    id,
+    coinTypeId,
+    quantity,
+    totalPaid,
+    purchasedAt,
+    createdAt,
+    notes: typeof raw?.notes === "string" ? raw.notes : undefined,
+  };
+
+  return e;
+}
+
+function safeNormalizeEntries(
+  input: unknown,
+  opts?: SafeReplaceOptions
+): { entries: StackEntry[]; report: ReplaceReport } {
+  const warnings: string[] = [];
+  const arr = Array.isArray(input) ? input : [];
+
+  const known = opts?.knownCoinIds;
+  const dropUnknown = (opts?.dropUnknownCoinRefs ?? true) && !!known;
+
+  let applied = 0;
+  let dropped = 0;
+  let unknownCoinRefs = 0;
+
+  const normalized: StackEntry[] = [];
+  for (const raw of arr) {
+    try {
+      const e = normalizeEntry(raw);
+
+      if (known && !known.has(e.coinTypeId)) {
+        unknownCoinRefs++;
+        if (dropUnknown) {
+          dropped++;
+          warnings.push(`Dropped entry ${e.id}: unknown coinTypeId ${e.coinTypeId}`);
+          continue;
+        }
+      }
+
+      normalized.push(e);
+      applied++;
+    } catch (err: any) {
+      dropped++;
+      warnings.push(
+        `Dropped entry: ${(raw?.id ?? "unknown").toString()} (${err?.message ?? "invalid"})`
+      );
+    }
+  }
+
+  return { entries: normalized, report: { applied, dropped, unknownCoinRefs, warnings } };
 }
 
 export const useStackStore = create<StackState>()(
@@ -54,17 +138,25 @@ export const useStackStore = create<StackState>()(
 
       clearAll: () => set({ entries: [] }),
 
-      // ✅ NEW: used by Journal restore
       replaceAll: (entriesFromBackup) => {
         const safe = Array.isArray(entriesFromBackup) ? entriesFromBackup : [];
-        // keep as-is (ids/timestamps matter); just overwrite
         set({ entries: safe });
+      },
+
+      // ✅ NEW
+      safeReplaceAll: (incoming, opts) => {
+        const { entries, report } = safeNormalizeEntries(incoming, opts);
+
+        // overwrite with normalized
+        set({ entries });
+
+        return report;
       },
     }),
     {
       name: "stackd:stack",
       storage: createJSONStorage(() => AsyncStorage),
-      version: 2,
+      version: 3, // bumped
 
       migrate: (persistedState: any) => {
         const entries = coerceEntries(persistedState);

@@ -1,3 +1,4 @@
+// app/(modal)/settings.tsx
 import React, { useMemo } from "react";
 import { View, Text, Pressable, StyleSheet, Alert } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -70,7 +71,7 @@ export default function SettingsScreen() {
   const addAnchor = useJournalStore((s) => s.addAnchor);
   const anchors = useJournalStore((s) => s.anchors);
 
-  // ✅ new: inventory backup storage
+  // ✅ inventory backup storage
   const upsertInventory = useJournalStore((s) => s.upsertInventory);
 
   const isConnected = useAccountStore((s) => s.isConnected);
@@ -135,21 +136,22 @@ export default function SettingsScreen() {
   const sealSnapshot = async () => {
     if (!walletAddress) return;
 
+    // ✅ inventory payload: stable ordering
     const inventoryPayload = {
       coins: [...coins]
-  .map((c) => ({
-    id: c.id,
-    name: c.name,
-    metal: c.metal,                 // "silver"
-    purity: c.purity,               // number
-    fineWeightGrams: c.fineWeightGrams ?? 0,
-    diameterMm: c.diameterMm,
-    thicknessMm: c.thicknessMm,
-    hallmarks: c.hallmarks ?? [],
-    notes: c.notes,
-    createdAt: c.createdAt,
-  }))
-  .sort((a, b) => a.id.localeCompare(b.id)),
+        .map((c) => ({
+          id: c.id,
+          name: c.name,
+          metal: c.metal, // "silver"
+          purity: c.purity,
+          fineWeightGrams: c.fineWeightGrams ?? 0,
+          diameterMm: c.diameterMm,
+          thicknessMm: c.thicknessMm,
+          hallmarks: c.hallmarks ?? [],
+          notes: c.notes,
+          createdAt: c.createdAt,
+        }))
+        .sort((a, b) => a.id.localeCompare(b.id)),
 
       entries: [...entries]
         .map((e) => ({
