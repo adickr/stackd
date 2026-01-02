@@ -1,6 +1,8 @@
 // src/stores/journalStore.ts
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { Buffer } from "buffer";
+import bs58 from "bs58";
 
 import { CoinType } from "../domain/coinType";
 
@@ -20,7 +22,12 @@ export type JournalAnchor = {
   inventoryHash: string;
   snapshotHash: string;
 
+  /**
+   * IMPORTANT: Store this as BASE58 (Solana address string).
+   * Older versions may have persisted base64 (MWA address bytes) — migrate/import will normalize.
+   */
   walletAddress: string;
+
   signature: string;
   signMessage: string;
 };
@@ -63,7 +70,6 @@ type JournalState = {
 
   reset: () => void;
 
-  // ✅ NEW
   exportBlob: () => JournalExportBlobV1;
   importBlob: (blob: unknown, mode?: "replace" | "merge") => ImportReport;
 };
@@ -72,12 +78,34 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === "object" && !Array.isArray(v);
 }
 
+/**
+ * Detects likely base64 (MWA account.address) and converts to base58 (Solana address string).
+ * If already base58 (or not convertible), returns the original string.
+ */
+function normalizeWalletAddress(addr: string): string {
+  const a = addr.trim();
+
+  // base58 never contains + / =, and often avoids 0 O I l
+  const looksLikeBase64 =
+    a.includes("+") || a.includes("/") || a.includes("=");
+
+  if (!looksLikeBase64) return a;
+
+  try {
+    const bytes = Buffer.from(a, "base64");
+    // If decode produced nothing meaningful, fall back
+    if (!bytes || bytes.length === 0) return a;
+    return bs58.encode(bytes);
+  } catch {
+    return a;
+  }
+}
+
 function coerceCoinType(c: unknown): CoinType | null {
   if (!isRecord(c)) return null;
 
   const id = typeof c.id === "string" ? c.id : null;
   const name = typeof c.name === "string" ? c.name : null;
-
   if (!id || !name) return null;
 
   const fineWeightGrams =
@@ -174,21 +202,32 @@ function coerceAnchor(a: unknown): JournalAnchor | null {
   const id = typeof a.id === "string" ? a.id : null;
   const inventoryHash = typeof a.inventoryHash === "string" ? a.inventoryHash : null;
   const snapshotHash = typeof a.snapshotHash === "string" ? a.snapshotHash : null;
-  const walletAddress = typeof a.walletAddress === "string" ? a.walletAddress : null;
+
+  const walletAddressRaw =
+    typeof a.walletAddress === "string" ? a.walletAddress : null;
+
   const signature = typeof a.signature === "string" ? a.signature : null;
   const signMessage = typeof a.signMessage === "string" ? a.signMessage : null;
+
   const levelName = typeof a.levelName === "string" ? a.levelName : "";
   const levelVersion = typeof a.levelVersion === "string" ? a.levelVersion : "v1";
 
-  if (!id || !inventoryHash || !snapshotHash || !walletAddress || !signature || !signMessage)
+  if (!id || !inventoryHash || !snapshotHash || !walletAddressRaw || !signature || !signMessage)
     return null;
 
-  const createdAt = typeof a.createdAt === "number" && Number.isFinite(a.createdAt) ? a.createdAt : null;
-  const totalFineOz = typeof a.totalFineOz === "number" && Number.isFinite(a.totalFineOz) ? a.totalFineOz : null;
-  const spotPrice = typeof a.spotPrice === "number" && Number.isFinite(a.spotPrice) ? a.spotPrice : null;
-  const spotFetchedAt = typeof a.spotFetchedAt === "number" && Number.isFinite(a.spotFetchedAt) ? a.spotFetchedAt : 0;
+  const walletAddress = normalizeWalletAddress(walletAddressRaw);
+
+  const createdAt =
+    typeof a.createdAt === "number" && Number.isFinite(a.createdAt) ? a.createdAt : null;
+  const totalFineOz =
+    typeof a.totalFineOz === "number" && Number.isFinite(a.totalFineOz) ? a.totalFineOz : null;
+  const spotPrice =
+    typeof a.spotPrice === "number" && Number.isFinite(a.spotPrice) ? a.spotPrice : null;
+  const spotFetchedAt =
+    typeof a.spotFetchedAt === "number" && Number.isFinite(a.spotFetchedAt) ? a.spotFetchedAt : 0;
   const currency = a.currency === "ZAR" || a.currency === "USD" ? a.currency : null;
-  const stackValue = typeof a.stackValue === "number" && Number.isFinite(a.stackValue) ? a.stackValue : null;
+  const stackValue =
+    typeof a.stackValue === "number" && Number.isFinite(a.stackValue) ? a.stackValue : null;
 
   if (createdAt === null || totalFineOz === null || spotPrice === null || currency === null || stackValue === null)
     return null;
@@ -214,7 +253,6 @@ function coerceAnchor(a: unknown): JournalAnchor | null {
 function coerceExportBlob(blob: unknown): JournalExportBlobV1 | null {
   if (!isRecord(blob)) return null;
 
-  // allow either raw store export or wrapped export blob
   const schema = typeof blob.schema === "string" ? blob.schema : null;
   const version = typeof blob.version === "number" ? blob.version : null;
 
@@ -236,7 +274,6 @@ function coerceExportBlob(blob: unknown): JournalExportBlobV1 | null {
     }
   }
 
-  // If schema/version are missing, still accept as "legacy export"
   return {
     schema: schema === "stackd.journal.export" ? "stackd.journal.export" : "stackd.journal.export",
     version: version === 1 ? 1 : 1,
@@ -265,7 +302,6 @@ export const useJournalStore = create<JournalState>()(
 
       reset: () => set({ anchors: [], inventories: {} }),
 
-      // ✅ NEW
       exportBlob: () => {
         const { anchors, inventories } = get();
         return {
@@ -277,7 +313,6 @@ export const useJournalStore = create<JournalState>()(
         };
       },
 
-      // ✅ NEW
       importBlob: (blob, mode = "replace") => {
         const parsed = coerceExportBlob(blob);
         if (!parsed) {
@@ -297,12 +332,13 @@ export const useJournalStore = create<JournalState>()(
           };
         }
 
-        // merge mode: dedupe anchors by id; inventories by key
         const current = get();
         const byAnchorId = new Map(current.anchors.map((a) => [a.id, a]));
         for (const a of incomingAnchors) byAnchorId.set(a.id, a);
 
-        const mergedAnchors = Array.from(byAnchorId.values()).sort((a, b) => a.createdAt - b.createdAt);
+        const mergedAnchors = Array.from(byAnchorId.values()).sort(
+          (a, b) => a.createdAt - b.createdAt
+        );
 
         const mergedInventories: Record<string, InventoryBackup> = { ...current.inventories };
         for (const [k, v] of Object.entries(incomingInventories)) mergedInventories[k] = v;
@@ -318,7 +354,7 @@ export const useJournalStore = create<JournalState>()(
     }),
     {
       name: "journal-store",
-      version: 4,
+      version: 5, // bump because we now normalize walletAddress
 
       migrate: (persisted: unknown) => {
         const raw =
@@ -328,9 +364,10 @@ export const useJournalStore = create<JournalState>()(
             ? (persisted as Record<string, unknown>)
             : {};
 
-        const anchors = Array.isArray(raw.anchors)
-          ? (raw.anchors as JournalAnchor[])
-          : [];
+        const anchorsRaw = Array.isArray(raw.anchors) ? raw.anchors : [];
+        const anchors = anchorsRaw
+          .map(coerceAnchor)
+          .filter((x): x is JournalAnchor => !!x);
 
         const inventories: Record<string, InventoryBackup> = {};
         const rawInv = raw.inventories;

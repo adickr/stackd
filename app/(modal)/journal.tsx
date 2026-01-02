@@ -38,7 +38,7 @@ export default function JournalScreen() {
   const isConnected = useAccountStore((s) => s.isConnected);
   const connect = useAccountStore((s) => s.connect);
 
-  // ✅ use safe replace actions (no manual loops, no regen ids)
+  // ✅ use safe replace actions
   const safeReplaceCoins = useCoinStore((s) => s.safeReplaceAll);
   const safeReplaceStack = useStackStore((s) => s.safeReplaceAll);
 
@@ -83,8 +83,6 @@ export default function JournalScreen() {
           onPress: () => {
             try {
               // 1) Restore coins first
-              // keepSeeds: always true
-              // keepLocalExtras: true prevents nuking local custom coins if backup doesn't contain full coin defs
               const coinReport = safeReplaceCoins(latestBackup.coins, {
                 keepSeeds: true,
                 keepLocalExtras: true,
@@ -103,7 +101,7 @@ export default function JournalScreen() {
               const warnings = [
                 ...coinReport.warnings,
                 ...stackReport.warnings,
-              ].slice(0, 6); // keep alert readable
+              ].slice(0, 6);
 
               Alert.alert(
                 "Restored",
@@ -121,6 +119,11 @@ export default function JournalScreen() {
         },
       ]
     );
+  };
+
+  const openSeal = (id: string) => {
+    // ✅ Step D: tap seal -> seal detail screen
+    router.push(`/journal-seal?id=${encodeURIComponent(id)}`);
   };
 
   return (
@@ -192,31 +195,48 @@ export default function JournalScreen() {
               data={data}
               keyExtractor={(a) => a.id}
               ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
-              renderItem={({ item }) => (
-                <View style={styles.item}>
-                  <Text style={styles.itemTitle}>{formatDate(item.createdAt)}</Text>
+              renderItem={({ item }) => {
+                const hasBackup = !!inventories?.[item.inventoryHash];
 
-                  <Text style={styles.itemSub}>
-                    Level: {item.levelName ?? "—"} •{" "}
-                    {(item.totalFineOz ?? 0).toFixed(4)} oz
-                  </Text>
+                return (
+                  <Pressable
+                    onPress={() => openSeal(item.id)}
+                    style={({ pressed }) => [{ opacity: pressed ? 0.92 : 1 }]}
+                  >
+                    <View style={styles.item}>
+                      <Text style={styles.itemTitle}>
+                        {formatDate(item.createdAt)}
+                      </Text>
 
-                  <Text style={styles.itemSub}>
-                    Spot: {item.currency ?? "—"} {(item.spotPrice ?? 0).toFixed(2)}
-                    /oz • Stack: {item.currency ?? "—"} {item.stackValue ?? 0}
-                  </Text>
+                      <Text style={styles.itemSub}>
+                        Level: {item.levelName ?? "—"} •{" "}
+                        {(item.totalFineOz ?? 0).toFixed(4)} oz
+                      </Text>
 
-                  <Text style={styles.itemTiny}>
-                    Signed by: {item.walletAddress ?? "—"}
-                  </Text>
-                  <Text style={styles.itemTiny}>sig: {item.signature ?? "—"}</Text>
+                      <Text style={styles.itemSub}>
+                        Spot: {item.currency ?? "—"}{" "}
+                        {(item.spotPrice ?? 0).toFixed(2)}/oz • Stack:{" "}
+                        {item.currency ?? "—"} {item.stackValue ?? 0}
+                      </Text>
 
-                  <Text style={styles.itemTiny}>
-                    backup: {inventories?.[item.inventoryHash] ? "yes" : "no"} • invHash:{" "}
-                    {item.inventoryHash?.slice(0, 10) ?? "—"}…
-                  </Text>
-                </View>
-              )}
+                      <Text style={styles.itemTiny}>
+                        Signed by: {item.walletAddress ?? "—"}
+                      </Text>
+
+                      <Text style={styles.itemTiny}>
+                        sig: {(item.signature ?? "—").slice(0, 18)}…
+                      </Text>
+
+                      <Text style={styles.itemTiny}>
+                        backup: {hasBackup ? "yes" : "no"} • invHash:{" "}
+                        {item.inventoryHash?.slice(0, 10) ?? "—"}…
+                      </Text>
+
+                      <Text style={styles.tapHint}>Tap to view & verify</Text>
+                    </View>
+                  </Pressable>
+                );
+              }}
             />
           </>
         )}
@@ -275,4 +295,6 @@ const styles = StyleSheet.create({
   itemTitle: { fontSize: 14, fontWeight: "900", opacity: 0.85 },
   itemSub: { marginTop: 6, fontSize: 12, opacity: 0.75 },
   itemTiny: { marginTop: 8, fontSize: 11, opacity: 0.55 },
+
+  tapHint: { marginTop: 10, fontSize: 11, fontWeight: "800", opacity: 0.45 },
 });

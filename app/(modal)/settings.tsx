@@ -53,6 +53,12 @@ function isUserCancel(err: any) {
   );
 }
 
+function shortAddr(a: string) {
+  if (!a) return "";
+  if (a.length <= 12) return a;
+  return `${a.slice(0, 4)}…${a.slice(-4)}`;
+}
+
 export default function SettingsScreen() {
   const router = useRouter();
 
@@ -75,7 +81,7 @@ export default function SettingsScreen() {
   const upsertInventory = useJournalStore((s) => s.upsertInventory);
 
   const isConnected = useAccountStore((s) => s.isConnected);
-  const walletAddress = useAccountStore((s) => s.walletAddress);
+  const walletAddressB58 = useAccountStore((s) => s.walletAddressB58);
   const connect = useAccountStore((s) => s.connect);
   const disconnect = useAccountStore((s) => s.disconnect);
   const signMessage = useAccountStore((s) => s.signMessage);
@@ -111,9 +117,7 @@ export default function SettingsScreen() {
     );
   }, [anchors]);
 
-  const lastFineOz = lastAnchor
-    ? Number(lastAnchor.totalFineOz.toFixed(4))
-    : null;
+  const lastFineOz = lastAnchor ? Number(lastAnchor.totalFineOz.toFixed(4)) : null;
   const lastValue = lastAnchor ? Math.round(lastAnchor.stackValue) : null;
 
   const hasStack = entries.length > 0;
@@ -121,10 +125,14 @@ export default function SettingsScreen() {
     !lastAnchor || currentFineOz !== lastFineOz || currentStackValue !== lastValue;
 
   const canSeal =
-    isConnected && !!walletAddress && hasStack && hasSpot && hasChangedSinceLastSeal;
+    isConnected &&
+    !!walletAddressB58 &&
+    hasStack &&
+    hasSpot &&
+    hasChangedSinceLastSeal;
 
   const sealSnapshot = async () => {
-    if (!walletAddress) return;
+    if (!walletAddressB58) return;
 
     const inventoryPayload = {
       coins: [...coins]
@@ -169,10 +177,11 @@ export default function SettingsScreen() {
 
     const snapshotHash = hashObject(snapshotPayload);
 
+    // IMPORTANT: address in the seal must be BASE58 (PublicKey string)
     const signText =
       `Stackd Journal Seal v1\n` +
       `snapshotHash:${snapshotHash}\n` +
-      `address:${walletAddress}`;
+      `address:${walletAddressB58}`;
 
     let signature: string;
     try {
@@ -206,7 +215,8 @@ export default function SettingsScreen() {
       inventoryHash,
       snapshotHash,
 
-      walletAddress,
+      // store BASE58 (matches new journalStore expectations + verifier)
+      walletAddress: walletAddressB58,
       signature,
       signMessage: signText,
     });
@@ -252,7 +262,6 @@ export default function SettingsScreen() {
               return;
             }
 
-            // ✅ minimal fix: res.report (not res.value)
             const report = res.report;
             Alert.alert(
               "Imported",
@@ -325,7 +334,7 @@ export default function SettingsScreen() {
             <>
               <View style={styles.accountPill}>
                 <Text style={styles.accountText} numberOfLines={1}>
-                  Connected: {walletAddress}
+                  Connected: {walletAddressB58 ? shortAddr(walletAddressB58) : "—"}
                 </Text>
               </View>
 
