@@ -23,6 +23,17 @@ export type JournalAnchor = {
   snapshotHash: string;
 
   /**
+   * Cloud pointer for encrypted SnapshotV1 (e.g. Arweave tx id).
+   * Optional for older/local-only anchors.
+   */
+  snapshotPointer?: string;
+
+  /**
+   * Snapshot schema version for decrypt/restore compatibility.
+   */
+  snapshotSchemaVersion?: string;
+
+  /**
    * IMPORTANT: Store this as BASE58 (Solana address string).
    * Older versions may have persisted base64 (MWA address bytes) — migrate/import will normalize.
    */

@@ -2,12 +2,45 @@ import React, { useMemo, useState } from "react";
 import { View, Text, StyleSheet } from "react-native";
 import Svg, { Path, Circle, Rect } from "react-native-svg";
 import { scaleLinear } from "d3-scale";
-import { line, curveMonotoneX } from "d3-shape";
 
 type Point = { t: number; v: number };
 
 function fmtValue(v: number) {
   return Math.round(v).toLocaleString();
+}
+
+function buildSmoothPath(points: Array<{ x: number; y: number }>): string {
+  if (points.length === 0) return "";
+  if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
+
+  const tension = 0.35;
+
+  let d = `M ${points[0].x} ${points[0].y}`;
+
+  for (let i = 0; i < points.length - 1; i++) {
+    const p0 = points[i - 1] ?? points[i];
+    const p1 = points[i];
+    const p2 = points[i + 1];
+    const p3 = points[i + 2] ?? p2;
+
+    const dx1 = (p2.x - p0.x) * tension;
+    const dy1 = (p2.y - p0.y) * tension;
+    const dx2 = (p3.x - p1.x) * tension;
+    const dy2 = (p3.y - p1.y) * tension;
+
+    const c1x = p1.x + dx1 / 3;
+    const c1y = p1.y + dy1 / 3;
+    const c2x = p2.x - dx2 / 3;
+    const c2y = p2.y - dy2 / 3;
+
+    const safe = (n: number) => (Number.isFinite(n) ? n : 0);
+
+    d += ` C ${safe(c1x)} ${safe(c1y)} ${safe(c2x)} ${safe(c2y)} ${safe(
+      p2.x
+    )} ${safe(p2.y)}`;
+  }
+
+  return d;
 }
 
 export function PortfolioValueLineChart(props: {
@@ -48,7 +81,6 @@ export function PortfolioValueLineChart(props: {
     let minY = Math.min(...ys);
     let maxY = Math.max(...ys);
 
-    // Prevent flat series from collapsing
     if (minY === maxY) {
       const pad = Math.max(1, Math.abs(minY) * 0.01);
       minY -= pad;
@@ -58,12 +90,12 @@ export function PortfolioValueLineChart(props: {
     const xScale = scaleLinear().domain([minX, maxX]).range([P, P + plotW]);
     const yScale = scaleLinear().domain([minY, maxY]).range([P + plotH, P]);
 
-    const lineGen = line<Point>()
-      .x((d: Point) => xScale(d.t))
-      .y((d: Point) => yScale(d.v))
-      .curve(curveMonotoneX);
+    const xy = paddedPoints.map((p) => ({
+      x: xScale(p.t),
+      y: yScale(p.v),
+    }));
 
-    const path = lineGen(paddedPoints) ?? "";
+    const path = buildSmoothPath(xy);
 
     return { xScale, yScale, path };
   }, [paddedPoints, width, height]);
@@ -85,9 +117,9 @@ export function PortfolioValueLineChart(props: {
     let bestDist = Infinity;
 
     for (let i = 0; i < paddedPoints.length; i++) {
-      const d = Math.abs(paddedPoints[i].t - t);
-      if (d < bestDist) {
-        bestDist = d;
+      const dist = Math.abs(paddedPoints[i].t - t);
+      if (dist < bestDist) {
+        bestDist = dist;
         bestIdx = i;
       }
     }
@@ -104,7 +136,6 @@ export function PortfolioValueLineChart(props: {
       )}
 
       <Svg width={width} height={height}>
-        {/* 🔥 Touch-capture layer (big hit area) */}
         <Rect
           x={0}
           y={0}
@@ -112,7 +143,7 @@ export function PortfolioValueLineChart(props: {
           height={height}
           fill="transparent"
           onPress={(e) => pickNearest(e.nativeEvent.locationX)}
-          // drag scrub support
+          onResponderGrant={(e) => pickNearest(e.nativeEvent.locationX)}
           onResponderMove={(e) => pickNearest(e.nativeEvent.locationX)}
           onStartShouldSetResponder={() => true}
           onMoveShouldSetResponder={() => true}

@@ -14,6 +14,7 @@ import { useStackStore } from "../../src/stores/stackStore";
 import { useCoinStore } from "../../src/stores/coinStore";
 import { useJournalStore } from "../../src/stores/journalStore";
 import { useAccountStore } from "../../src/stores/accountStore";
+import { publishEncryptedSnapshot, restoreLatestEncryptedSnapshot } from "../../src/services/cloudJournal";
 
 import { hashObject } from "../../src/utils/journalCrypto";
 import {
@@ -222,6 +223,47 @@ export default function SettingsScreen() {
     });
   };
 
+  
+  const handlePublishCloud = async () => {
+    if (!isConnected || !walletAddressB58) {
+      Alert.alert("Wallet required", "Connect your wallet to publish an encrypted cloud backup.");
+      return;
+    }
+    try {
+      const res = await publishEncryptedSnapshot();
+      Alert.alert("Published", `Cloud backup published.\nPointer: ${res.pointer}`);
+    } catch (e: any) {
+      if (isUserCancel(e)) return;
+      Alert.alert("Publish failed", e?.message ?? String(e));
+    }
+  };
+
+  const handleRestoreCloud = async () => {
+    if (!isConnected || !walletAddressB58) {
+      Alert.alert("Wallet required", "Connect your wallet to restore your encrypted cloud backup.");
+      return;
+    }
+    Alert.alert(
+      "Restore from cloud?",
+      "This will replace your local stack with the latest published cloud snapshot.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Restore",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              const res = await restoreLatestEncryptedSnapshot();
+              Alert.alert("Restored", `Restored latest cloud snapshot.\nPointer: ${res.pointer}`);
+            } catch (e: any) {
+              Alert.alert("Restore failed", e?.message ?? String(e));
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const handleExport = async () => {
     const res = await exportJournalBackup();
 
@@ -361,6 +403,28 @@ export default function SettingsScreen() {
           >
             <Text style={styles.navText}>Open Journal</Text>
           </Pressable>
+          <Pressable
+            onPress={handlePublishCloud}
+            style={({ pressed }) => [
+              styles.navBtn,
+              { marginTop: 10 },
+              pressed && { opacity: 0.85 },
+            ]}
+          >
+            <Text style={styles.navText}>Publish encrypted cloud backup</Text>
+          </Pressable>
+
+          <Pressable
+            onPress={handleRestoreCloud}
+            style={({ pressed }) => [
+              styles.navBtn,
+              { marginTop: 10 },
+              pressed && { opacity: 0.85 },
+            ]}
+          >
+            <Text style={styles.navText}>Restore from cloud</Text>
+          </Pressable>
+
 
           <Pressable
             onPress={handleExport}
