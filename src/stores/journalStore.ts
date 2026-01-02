@@ -1,6 +1,7 @@
 // src/stores/journalStore.ts
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { persist, createJSONStorage } from "zustand/middleware";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Buffer } from "buffer";
 import bs58 from "bs58";
 
@@ -96,15 +97,11 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 function normalizeWalletAddress(addr: string): string {
   const a = addr.trim();
 
-  // base58 never contains + / =, and often avoids 0 O I l
-  const looksLikeBase64 =
-    a.includes("+") || a.includes("/") || a.includes("=");
-
+  const looksLikeBase64 = a.includes("+") || a.includes("/") || a.includes("=");
   if (!looksLikeBase64) return a;
 
   try {
     const bytes = Buffer.from(a, "base64");
-    // If decode produced nothing meaningful, fall back
     if (!bytes || bytes.length === 0) return a;
     return bs58.encode(bytes);
   } catch {
@@ -209,7 +206,6 @@ function coerceInventoryBackup(b: unknown): InventoryBackup | null {
 function coerceAnchor(a: unknown): JournalAnchor | null {
   if (!isRecord(a)) return null;
 
-  // required string fields
   const id = typeof a.id === "string" ? a.id : null;
   const inventoryHash = typeof a.inventoryHash === "string" ? a.inventoryHash : null;
   const snapshotHash = typeof a.snapshotHash === "string" ? a.snapshotHash : null;
@@ -240,8 +236,21 @@ function coerceAnchor(a: unknown): JournalAnchor | null {
   const stackValue =
     typeof a.stackValue === "number" && Number.isFinite(a.stackValue) ? a.stackValue : null;
 
-  if (createdAt === null || totalFineOz === null || spotPrice === null || currency === null || stackValue === null)
+  if (
+    createdAt === null ||
+    totalFineOz === null ||
+    spotPrice === null ||
+    currency === null ||
+    stackValue === null
+  ) {
     return null;
+  }
+
+  const snapshotPointer =
+    typeof a.snapshotPointer === "string" ? a.snapshotPointer : undefined;
+
+  const snapshotSchemaVersion =
+    typeof a.snapshotSchemaVersion === "string" ? a.snapshotSchemaVersion : undefined;
 
   return {
     id,
@@ -258,14 +267,13 @@ function coerceAnchor(a: unknown): JournalAnchor | null {
     walletAddress,
     signature,
     signMessage,
+    snapshotPointer,
+    snapshotSchemaVersion,
   };
 }
 
 function coerceExportBlob(blob: unknown): JournalExportBlobV1 | null {
   if (!isRecord(blob)) return null;
-
-  const schema = typeof blob.schema === "string" ? blob.schema : null;
-  const version = typeof blob.version === "number" ? blob.version : null;
 
   const exportedAt =
     typeof blob.exportedAt === "number" && Number.isFinite(blob.exportedAt)
@@ -286,13 +294,15 @@ function coerceExportBlob(blob: unknown): JournalExportBlobV1 | null {
   }
 
   return {
-    schema: schema === "stackd.journal.export" ? "stackd.journal.export" : "stackd.journal.export",
-    version: version === 1 ? 1 : 1,
+    schema: "stackd.journal.export",
+    version: 1,
     exportedAt,
     anchors,
     inventories,
   };
 }
+
+const PERSIST_VERSION = 6; // bump: uses AsyncStorage + keeps snapshotPointer/schemaVersion + normalizes wallet
 
 export const useJournalStore = create<JournalState>()(
   persist(
@@ -301,7 +311,14 @@ export const useJournalStore = create<JournalState>()(
       inventories: {},
 
       addAnchor: (anchor) =>
-        set((state) => ({ anchors: [...state.anchors, anchor] })),
+        set((state) => {
+          // de-dupe by id, then sort by createdAt
+          const byId = new Map<string, JournalAnchor>();
+          for (const a of state.anchors) byId.set(a.id, a);
+          byId.set(anchor.id, anchor);
+          const anchors = Array.from(byId.values()).sort((a, b) => a.createdAt - b.createdAt);
+          return { anchors };
+        }),
 
       upsertInventory: (backup) =>
         set((state) => ({
@@ -327,7 +344,11 @@ export const useJournalStore = create<JournalState>()(
       importBlob: (blob, mode = "replace") => {
         const parsed = coerceExportBlob(blob);
         if (!parsed) {
-          return { anchorsImported: 0, inventoriesImported: 0, warnings: ["Invalid export file."] };
+          return {
+            anchorsImported: 0,
+            inventoriesImported: 0,
+            warnings: ["Invalid export file."],
+          };
         }
 
         const warnings: string[] = [];
@@ -335,7 +356,10 @@ export const useJournalStore = create<JournalState>()(
         const incomingInventories = parsed.inventories;
 
         if (mode === "replace") {
-          set({ anchors: incomingAnchors, inventories: incomingInventories });
+          set({
+            anchors: incomingAnchors.slice().sort((a, b) => a.createdAt - b.createdAt),
+            inventories: incomingInventories,
+          });
           return {
             anchorsImported: incomingAnchors.length,
             inventoriesImported: Object.keys(incomingInventories).length,
@@ -365,23 +389,26 @@ export const useJournalStore = create<JournalState>()(
     }),
     {
       name: "journal-store",
-      version: 5, // bump because we now normalize walletAddress
+      version: PERSIST_VERSION,
+      storage: createJSONStorage(() => AsyncStorage),
 
       migrate: (persisted: unknown) => {
-        const raw =
+        // zustand persist wraps in { state, version } depending on version/history.
+        const rawState =
           isRecord(persisted) && isRecord((persisted as any).state)
             ? ((persisted as any).state as Record<string, unknown>)
             : isRecord(persisted)
             ? (persisted as Record<string, unknown>)
             : {};
 
-        const anchorsRaw = Array.isArray(raw.anchors) ? raw.anchors : [];
+        const anchorsRaw = Array.isArray(rawState.anchors) ? rawState.anchors : [];
         const anchors = anchorsRaw
           .map(coerceAnchor)
-          .filter((x): x is JournalAnchor => !!x);
+          .filter((x): x is JournalAnchor => !!x)
+          .sort((a, b) => a.createdAt - b.createdAt);
 
         const inventories: Record<string, InventoryBackup> = {};
-        const rawInv = raw.inventories;
+        const rawInv = rawState.inventories;
 
         if (isRecord(rawInv)) {
           for (const [k, v] of Object.entries(rawInv)) {

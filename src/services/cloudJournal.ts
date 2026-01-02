@@ -5,41 +5,28 @@ import { useCoinStore } from "../stores/coinStore";
 import { useStackStore } from "../stores/stackStore";
 import { useJournalStore } from "../stores/journalStore";
 import { restoreInventoryFromSnapshot } from "./inventoryRestore";
-import { CloudStorageRelay } from "./cloudStorage";
+import { getCloudStorage } from "./cloudStorage";
 import {
   decryptJsonSecretBox,
   encryptJsonSecretBox,
   hashObjectSha256Hex,
   keyFromSignature,
-  parseSignedPayloadB64,
 } from "../utils/cryptoV1";
 import { hashObject } from "../utils/journalCrypto";
 
 const KEY_MESSAGE_PREFIX = "STACKD_KEY_V1::";
 const PUBLISH_MESSAGE_PREFIX = "STACKD_PUBLISH_V1::";
 
-/**
- * Provide your relay base URL via app config.
- * For Expo, the easiest is EXPO_PUBLIC_STACKD_RELAY_URL in app config.
- */
-function getRelayBaseUrl(): string {
-  const v =
-    (process.env as any)?.EXPO_PUBLIC_STACKD_RELAY_URL ||
-    (process.env as any)?.STACKD_RELAY_URL;
-
-  if (!v || typeof v !== "string") {
-    throw new Error(
-      "Missing relay URL. Set EXPO_PUBLIC_STACKD_RELAY_URL in app config."
-    );
-  }
-  return v.replace(/\/+$/, "");
-}
-
 async function deriveKeyForWallet(walletAddressB58: string): Promise<Uint8Array> {
+  console.log("[cloudJournal] deriveKeyForWallet v2 (no-parse) running");
+
   const signMessage = useAccountStore.getState().signMessage;
-  const signedPayloadB64 = await signMessage(KEY_MESSAGE_PREFIX + walletAddressB58);
-  const { signature } = parseSignedPayloadB64(signedPayloadB64);
-  return keyFromSignature(signature);
+
+  // Most wallet adapters return a signature string (NOT an encoded payload).
+  // We derive key material from whatever signature string we get back.
+  const signatureStr = await signMessage(KEY_MESSAGE_PREFIX + walletAddressB58);
+  console.log("[cloudJournal] signatureStr len =", String(signatureStr).length);
+  return await keyFromSignature(signatureStr);
 }
 
 export async function publishEncryptedSnapshot(): Promise<{
@@ -65,8 +52,8 @@ export async function publishEncryptedSnapshot(): Promise<{
   const json = JSON.stringify(snapshot);
   const boxed = await encryptJsonSecretBox({ json, key });
 
-  const relay = new CloudStorageRelay(getRelayBaseUrl());
-  const res = await relay.publish({
+  const storage = getCloudStorage();
+  const res = await storage.publish({
     walletAddress,
     snapshotHash,
     schemaVersion: snapshot.schemaVersion,
@@ -155,12 +142,15 @@ export async function restoreLatestEncryptedSnapshot(): Promise<{
   }
   const walletAddress = account.walletAddressB58;
 
-  const relay = new CloudStorageRelay(getRelayBaseUrl());
-  const latest = await relay.latest(walletAddress);
+  const storage = getCloudStorage();
+  const latest = await storage.latest(walletAddress);
+  if (!latest) {
+    throw new Error("No backup found for this wallet.");
+  }
 
   const key = await deriveKeyForWallet(walletAddress);
 
-  const json = decryptJsonSecretBox({
+  const json = await decryptJsonSecretBox({
     nonceB64: latest.nonceB64,
     ciphertextB64: latest.ciphertextB64,
     key,
@@ -168,7 +158,6 @@ export async function restoreLatestEncryptedSnapshot(): Promise<{
 
   const snapshot = JSON.parse(json);
 
-  // Basic sanity check
   if (
     !snapshot ||
     snapshot.schemaVersion !== "snapshot.v1" ||
@@ -177,7 +166,6 @@ export async function restoreLatestEncryptedSnapshot(): Promise<{
     throw new Error("Snapshot schema mismatch or wrong wallet.");
   }
 
-  // Restore coins + entries
   restoreInventoryFromSnapshot({
     coins: snapshot.coins,
     entries: snapshot.entries,

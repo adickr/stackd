@@ -225,18 +225,34 @@ export default function SettingsScreen() {
 
   
   const handlePublishCloud = async () => {
-    if (!isConnected || !walletAddressB58) {
-      Alert.alert("Wallet required", "Connect your wallet to publish an encrypted cloud backup.");
-      return;
-    }
-    try {
-      const res = await publishEncryptedSnapshot();
-      Alert.alert("Published", `Cloud backup published.\nPointer: ${res.pointer}`);
-    } catch (e: any) {
-      if (isUserCancel(e)) return;
-      Alert.alert("Publish failed", e?.message ?? String(e));
-    }
-  };
+  console.log("[settings] publish tapped");
+  console.log("[settings] isConnected =", isConnected);
+  console.log("[settings] walletAddressB58 =", walletAddressB58);
+
+  if (!isConnected || !walletAddressB58) {
+    Alert.alert(
+      "Wallet required",
+      "Connect your wallet to publish an encrypted cloud backup."
+    );
+    return;
+  }
+
+  try {
+    console.log("[settings] calling publishEncryptedSnapshot...");
+    const res = await publishEncryptedSnapshot();
+    console.log("[settings] publish ok", res);
+    Alert.alert("Published", `Cloud backup published.\nPointer: ${res.pointer}`);
+  } catch (e: any) {
+    console.log(
+      "[settings] publish error",
+      e?.message ?? String(e),
+      e
+    );
+    if (isUserCancel(e)) return;
+    Alert.alert("Publish failed", e?.message ?? String(e));
+  }
+};
+
 
   const handleRestoreCloud = async () => {
     if (!isConnected || !walletAddressB58) {
