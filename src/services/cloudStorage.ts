@@ -1,22 +1,30 @@
 // src/services/cloudStorage.ts
-/**
- * Stackd v1 cloud storage uses a small relay service.
- * DEBUG VERSION – verbose logs to validate Step 3 local stub behaviour.
- */
+import bs58 from "bs58";
+import Constants from "expo-constants";
 
-import AsyncStorage from "@react-native-async-storage/async-storage";
+// -------- Types --------
+export type CloudChallenge = {
+  nonce: string;
+  issuedAt: number;
+  expiresAt: number;
+  message: string;
+};
 
 export type CloudPublishRequest = {
-  walletAddress: string;
+  walletAddress: string; // base58
   snapshotHash: string;
   schemaVersion: string;
   nonceB64: string;
   ciphertextB64: string;
+
+  auth: {
+    nonce: string;
+    message: string;
+    signature: string; // base58 signature bytes
+  };
 };
 
-export type CloudPublishResponse = {
-  pointer: string;
-};
+export type CloudPublishResponse = { pointer: string };
 
 export type CloudLatestResponse = {
   pointer: string;
@@ -26,148 +34,168 @@ export type CloudLatestResponse = {
   ciphertextB64: string;
 };
 
-export interface CloudStorage {
-  publish(req: CloudPublishRequest): Promise<CloudPublishResponse>;
-  latest(walletAddress: string): Promise<CloudLatestResponse | null>;
+export type CloudStorage = {
+  challenge: (walletAddress: string, snapshotHash: string) => Promise<CloudChallenge>;
+  publish: (req: CloudPublishRequest) => Promise<CloudPublishResponse>;
+  latest: (walletAddress: string) => Promise<CloudLatestResponse | null>;
+};
+
+// -------- Config / injected signer --------
+
+// Highest priority: explicitly set at runtime (eg from Settings / debug)
+let RELAY_BASE_URL_OVERRIDE = "";
+
+// Next priority: EXPO_PUBLIC_ env (works in Metro when set correctly)
+const RELAY_BASE_URL_ENV = String(process.env.EXPO_PUBLIC_RELAY_URL ?? "").trim();
+
+// signer injection
+let cloudSignMessages: null | ((messages: string[]) => Promise<string[]>) = null;
+
+export function setRelayBaseUrl(url: string | null) {
+  RELAY_BASE_URL_OVERRIDE = String(url ?? "").trim();
 }
 
-/**
- * STEP 3: local stub (no network)
- */
-const USE_LOCAL_STUB = true;
-const STUB_KEY_PREFIX = "stackd:cloudstub:";
-
-function stubKey(walletAddress: string) {
-  return `${STUB_KEY_PREFIX}${walletAddress}`;
+export function setCloudSignMessages(fn: null | ((messages: string[]) => Promise<string[]>)) {
+  cloudSignMessages = fn;
 }
 
-class LocalCloudStorage implements CloudStorage {
-  async publish(req: CloudPublishRequest): Promise<CloudPublishResponse> {
-    const key = stubKey(req.walletAddress);
-    const pointer = `local-${Date.now()}-${Math.random()
-      .toString(16)
-      .slice(2)}`;
-
-    const blob: CloudLatestResponse = {
-      pointer,
-      snapshotHash: req.snapshotHash,
-      schemaVersion: req.schemaVersion,
-      nonceB64: req.nonceB64,
-      ciphertextB64: req.ciphertextB64,
-    };
-
-    console.log("[cloudstub] PUBLISH");
-    console.log("[cloudstub] wallet =", req.walletAddress);
-    console.log("[cloudstub] storage key =", key);
-    console.log("[cloudstub] pointer =", pointer);
-
-    await AsyncStorage.setItem(key, JSON.stringify(blob));
-
-    const confirm = await AsyncStorage.getItem(key);
-    console.log(
-      "[cloudstub] confirm write =",
-      confirm ? "OK" : "FAILED"
-    );
-
-    return { pointer };
+// Backwards compatibility
+export function setCloudSignMessage(fn: null | ((message: string) => Promise<string>)) {
+  if (!fn) {
+    cloudSignMessages = null;
+    return;
   }
+  cloudSignMessages = async (messages: string[]) => {
+    const out: string[] = [];
+    for (const m of messages) out.push(await fn(m));
+    return out;
+  };
+}
 
-  async latest(walletAddress: string): Promise<CloudLatestResponse | null> {
-    const key = stubKey(walletAddress);
+// optional context (debug)
+let walletContext: { walletAddressB64: string | null; walletAddressB58: string | null } = {
+  walletAddressB64: null,
+  walletAddressB58: null,
+};
 
-    console.log("[cloudstub] RESTORE");
-    console.log("[cloudstub] wallet =", walletAddress);
-    console.log("[cloudstub] storage key =", key);
+export function setCloudWalletContext(ctx: { walletAddressB64: string | null; walletAddressB58: string | null }) {
+  walletContext = ctx;
+}
 
-    const raw = await AsyncStorage.getItem(key);
+function normalizeBaseUrl(u: string) {
+  return String(u || "").trim().replace(/\/+$/, "");
+}
 
-    console.log(
-      "[cloudstub] raw value =",
-      raw ? "FOUND" : "MISSING"
-    );
+// Expo Constants “extra” (works for dev client + production if you wire it in)
+function relayFromConstantsExtra(): string {
+  // expoConfig is preferred in newer SDKs, manifest for older
+  const extraA: any = (Constants as any)?.expoConfig?.extra;
+  const extraB: any = (Constants as any)?.manifest?.extra;
+  const extra = extraA ?? extraB ?? {};
+  return String(extra?.EXPO_PUBLIC_RELAY_URL ?? extra?.relayUrl ?? "").trim();
+}
 
-    if (!raw) return null;
+function mustBaseUrl() {
+  const fromOverride = normalizeBaseUrl(RELAY_BASE_URL_OVERRIDE);
+  if (fromOverride) return fromOverride;
 
-    try {
-      const parsed = JSON.parse(raw) as CloudLatestResponse;
-      console.log("[cloudstub] parsed pointer =", parsed.pointer);
-      return parsed;
-    } catch (e) {
-      console.error("[cloudstub] JSON parse failed", e);
-      return null;
+  const fromEnv = normalizeBaseUrl(RELAY_BASE_URL_ENV);
+  if (fromEnv) return fromEnv;
+
+  const fromExtra = normalizeBaseUrl(relayFromConstantsExtra());
+  if (fromExtra) return fromExtra;
+
+  // Helpful debug info in logs
+  console.log("[cloudStorage] baseUrl missing. Debug:", {
+    override: RELAY_BASE_URL_OVERRIDE || null,
+    env: RELAY_BASE_URL_ENV || null,
+    extra: relayFromConstantsExtra() || null,
+  });
+
+  throw new Error("Relay baseUrl not configured (EXPO_PUBLIC_RELAY_URL).");
+}
+
+// -------- Helpers --------
+function padB64(s: string) {
+  const t = String(s ?? "");
+  const mod = t.length % 4;
+  if (mod === 0) return t;
+  return t + "=".repeat(4 - mod);
+}
+
+function b64ToBytes(b64: string) {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { Buffer } = require("buffer");
+  return Buffer.from(padB64(b64), "base64");
+}
+
+// -------- Relay implementation --------
+class RelayCloudStorage implements CloudStorage {
+  async challenge(walletAddress: string, snapshotHash: string) {
+    const base = mustBaseUrl();
+    const url =
+      `${base}/v1/journal/challenge` +
+      `?walletAddress=${encodeURIComponent(walletAddress)}` +
+      `&snapshotHash=${encodeURIComponent(snapshotHash)}`;
+
+    const r = await fetch(url);
+    if (!r.ok) {
+      const txt = await r.text().catch(() => "");
+      throw new Error(`Challenge failed (${r.status}): ${txt || r.statusText}`);
     }
+    return (await r.json()) as CloudChallenge;
   }
-}
 
-/* ---------- Relay (unused in Step 3) ---------- */
+  async publish(req: CloudPublishRequest) {
+    const base = mustBaseUrl();
+    const url = `${base}/v1/journal/publish`;
 
-export class CloudStorageRelay {
-  constructor(private baseUrl: string) {}
-
-  async publish(req: CloudPublishRequest): Promise<CloudPublishResponse> {
-    const res = await fetch(this.baseUrl + "/v1/journal/publish", {
+    const r = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(req),
     });
 
-    if (!res.ok) {
-      const txt = await res.text().catch(() => "");
-      throw new Error(
-        `Publish failed (${res.status}): ${txt || res.statusText}`
-      );
+    if (!r.ok) {
+      const txt = await r.text().catch(() => "");
+      throw new Error(`Publish failed (${r.status}): ${txt || r.statusText}`);
     }
-    return (await res.json()) as CloudPublishResponse;
+
+    return (await r.json()) as CloudPublishResponse;
   }
 
-  async latest(walletAddress: string): Promise<CloudLatestResponse> {
-    const url =
-      this.baseUrl +
-      "/v1/journal/latest?walletAddress=" +
-      encodeURIComponent(walletAddress);
+  async latest(walletAddress: string) {
+    const base = mustBaseUrl();
+    const url = `${base}/v1/journal/latest?walletAddress=${encodeURIComponent(walletAddress)}`;
 
-    const res = await fetch(url, { method: "GET" });
-    if (!res.ok) {
-      const txt = await res.text().catch(() => "");
-      throw new Error(
-        `Restore failed (${res.status}): ${txt || res.statusText}`
-      );
+    const r = await fetch(url);
+    if (r.status === 404) return null;
+    if (!r.ok) {
+      const txt = await r.text().catch(() => "");
+      throw new Error(`Latest failed (${r.status}): ${txt || r.statusText}`);
     }
-    return (await res.json()) as CloudLatestResponse;
+    return (await r.json()) as CloudLatestResponse;
   }
 }
 
-class RelayCloudStorage implements CloudStorage {
-  private relay: CloudStorageRelay;
-
-  constructor(baseUrl: string) {
-    this.relay = new CloudStorageRelay(baseUrl);
-  }
-
-  publish(req: CloudPublishRequest): Promise<CloudPublishResponse> {
-    return this.relay.publish(req);
-  }
-
-  async latest(walletAddress: string): Promise<CloudLatestResponse | null> {
-    return this.relay.latest(walletAddress);
-  }
-}
-
-/**
- * Single entry point used by cloudJournal.ts
- */
 export function getCloudStorage(): CloudStorage {
-  if (USE_LOCAL_STUB) {
-    console.log("[cloudstub] USING LOCAL STUB STORAGE");
-    return new LocalCloudStorage();
-  }
+  return new RelayCloudStorage();
+}
 
-  const baseUrl = process.env.EXPO_PUBLIC_STACKD_RELAY_URL;
-  if (!baseUrl) {
-    throw new Error(
-      "Missing relay URL. Set EXPO_PUBLIC_STACKD_RELAY_URL in app config."
-    );
+// Utility: base64 signature string -> base58 bytes signature
+export function walletSigB64ToB58(sigB64: string) {
+  const bytes = b64ToBytes(sigB64);
+  if (bytes.length !== 64) {
+    throw new Error(`Wallet signature bytes length unexpected: ${bytes.length}`);
   }
+  return bs58.encode(bytes);
+}
 
-  return new RelayCloudStorage(baseUrl);
+export function getCloudSigner() {
+  if (!cloudSignMessages) throw new Error("Cloud signer not set (setCloudSignMessages).");
+  return cloudSignMessages;
+}
+
+export function getWalletContext() {
+  return walletContext;
 }

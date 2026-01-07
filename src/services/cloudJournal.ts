@@ -5,7 +5,6 @@ import { useCoinStore } from "../stores/coinStore";
 import { useStackStore } from "../stores/stackStore";
 import { useJournalStore } from "../stores/journalStore";
 import { restoreInventoryFromSnapshot } from "./inventoryRestore";
-import { getCloudStorage } from "./cloudStorage";
 import {
   decryptJsonSecretBox,
   encryptJsonSecretBox,
@@ -14,19 +13,17 @@ import {
 } from "../utils/cryptoV1";
 import { hashObject } from "../utils/journalCrypto";
 
+import {
+  getCloudStorage,
+  getCloudSigner,
+  walletSigB64ToB58,
+} from "./cloudStorage";
+
 const KEY_MESSAGE_PREFIX = "STACKD_KEY_V1::";
-const PUBLISH_MESSAGE_PREFIX = "STACKD_PUBLISH_V1::";
 
-async function deriveKeyForWallet(walletAddressB58: string): Promise<Uint8Array> {
-  console.log("[cloudJournal] deriveKeyForWallet v2 (no-parse) running");
-
-  const signMessage = useAccountStore.getState().signMessage;
-
-  // Most wallet adapters return a signature string (NOT an encoded payload).
-  // We derive key material from whatever signature string we get back.
-  const signatureStr = await signMessage(KEY_MESSAGE_PREFIX + walletAddressB58);
-  console.log("[cloudJournal] signatureStr len =", String(signatureStr).length);
-  return await keyFromSignature(signatureStr);
+async function deriveKeyFromSigB64(sigB64: string): Promise<Uint8Array> {
+  // Your existing method (deterministic for restore)
+  return await keyFromSignature(sigB64);
 }
 
 export async function publishEncryptedSnapshot(): Promise<{
@@ -46,26 +43,42 @@ export async function publishEncryptedSnapshot(): Promise<{
   const snapshot = buildSnapshotV1({ walletAddress, coins, entries });
   const snapshotHash = await hashObjectSha256Hex(snapshot);
 
-  // Derive deterministic encryption key from a deterministic wallet signature.
-  const key = await deriveKeyForWallet(walletAddress);
+  const storage = getCloudStorage();
 
+  // 1) Get challenge (no wallet prompt)
+  const ch = await storage.challenge(walletAddress, snapshotHash);
+
+  // 2) ONE wallet prompt: sign both messages in one MWA call
+  const signMessages = getCloudSigner();
+  const [keySigB64, challengeSigB64] = await signMessages([
+    KEY_MESSAGE_PREFIX + walletAddress,
+    ch.message,
+  ]);
+
+  // 3) Derive encryption key from deterministic signature (message 1)
+  const key = await deriveKeyFromSigB64(keySigB64);
+
+  // 4) Encrypt snapshot
   const json = JSON.stringify(snapshot);
   const boxed = await encryptJsonSecretBox({ json, key });
 
-  const storage = getCloudStorage();
+  // 5) Publish using challenge signature (message 2)
+  const challengeSigB58 = walletSigB64ToB58(challengeSigB64);
+
   const res = await storage.publish({
     walletAddress,
     snapshotHash,
     schemaVersion: snapshot.schemaVersion,
     nonceB64: boxed.nonceB64,
     ciphertextB64: boxed.ciphertextB64,
+    auth: {
+      nonce: ch.nonce,
+      message: ch.message,
+      signature: challengeSigB58,
+    },
   });
 
-  // Sign a publish message (separate from key derivation).
-  const publishMessage = `${PUBLISH_MESSAGE_PREFIX}${snapshotHash}::${snapshot.createdAt}`;
-  const signedPublishPayloadB64 = await account.signMessage(publishMessage);
-
-  // Keep the existing local inventory backup (useful offline), keyed by inventoryHash.
+  // Keep the existing local inventory backup (offline), keyed by inventoryHash.
   const inventoryPayload = {
     coins: coins
       .map((c) => ({
@@ -102,12 +115,11 @@ export async function publishEncryptedSnapshot(): Promise<{
     entries: inventoryPayload.entries as any,
   });
 
-  // Add anchor (now includes pointer).
+  // Anchor: reuse the SAME signature you already did for the relay (no 3rd prompt)
   useJournalStore.getState().addAnchor({
     id: `${snapshot.createdAt}-${Math.random().toString(16).slice(2)}`,
     createdAt: snapshot.createdAt,
 
-    // v1 minimal fields (not used for restore)
     totalFineOz: 0,
     spotPrice: 0,
     spotFetchedAt: 0,
@@ -121,10 +133,9 @@ export async function publishEncryptedSnapshot(): Promise<{
     snapshotHash,
 
     walletAddress,
-    signature: signedPublishPayloadB64,
-    signMessage: publishMessage,
+    signature: challengeSigB58,
+    signMessage: ch.message,
 
-    // new fields (added to type)
     snapshotPointer: res.pointer,
     snapshotSchemaVersion: snapshot.schemaVersion,
   } as any);
@@ -144,11 +155,11 @@ export async function restoreLatestEncryptedSnapshot(): Promise<{
 
   const storage = getCloudStorage();
   const latest = await storage.latest(walletAddress);
-  if (!latest) {
-    throw new Error("No backup found for this wallet.");
-  }
+  if (!latest) throw new Error("No backup found for this wallet.");
 
-  const key = await deriveKeyForWallet(walletAddress);
+  // Restore needs 1 signature (key derivation), which is fine.
+  const keySigB64 = await account.signMessage(KEY_MESSAGE_PREFIX + walletAddress);
+  const key = await deriveKeyFromSigB64(keySigB64);
 
   const json = await decryptJsonSecretBox({
     nonceB64: latest.nonceB64,

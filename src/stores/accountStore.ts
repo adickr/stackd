@@ -22,7 +22,8 @@ function isUserCancelled(err: unknown) {
     err instanceof Error ? err.message : typeof err === "string" ? err : "";
   return (
     msg.toLowerCase().includes("cancellationexception") ||
-    msg.toLowerCase().includes("cancel")
+    msg.toLowerCase().includes("cancel") ||
+    msg === "USER_CANCELLED"
   );
 }
 
@@ -55,7 +56,10 @@ type AccountState = {
   connect: () => Promise<void>;
   ensureConnected: () => Promise<boolean>;
   disconnect: () => Promise<void>;
-  signMessage: (message: string) => Promise<string>;
+
+  // signing
+  signMessages: (messages: string[]) => Promise<string[]>; // base64 signatures
+  signMessage: (message: string) => Promise<string>;       // base64 signature
 };
 
 export const useAccountStore = create<AccountState>()(
@@ -133,7 +137,6 @@ export const useAccountStore = create<AccountState>()(
 
           return true;
         } catch {
-          // token revoked/expired / wallet unavailable
           set({
             isConnected: false,
             walletAddressB64: null,
@@ -164,7 +167,11 @@ export const useAccountStore = create<AccountState>()(
         }
       },
 
-      signMessage: async (message: string) => {
+      signMessages: async (messages: string[]) => {
+        if (!Array.isArray(messages) || messages.length === 0) {
+          throw new Error("signMessages requires at least one message");
+        }
+
         try {
           const { authToken, cluster, walletAddressB64 } = get();
 
@@ -175,28 +182,29 @@ export const useAccountStore = create<AccountState>()(
               auth_token: authToken ?? undefined,
             });
 
-            const addressB64 =
-              walletAddressB64 ?? auth.accounts?.[0]?.address ?? null;
+            const addressB64 = walletAddressB64 ?? auth.accounts?.[0]?.address ?? null;
             if (!addressB64) throw new Error("No wallet address available");
 
-            const addressB58 = b64PubkeyToBase58(addressB64);
-            const payload = utf8ToBytes(message);
+            const payloads = messages.map(utf8ToBytes);
 
             const signedPayloads = await wallet.signMessages({
-              addresses: [addressB64],
-              payloads: [payload],
+              addresses: Array(messages.length).fill(addressB64),
+              payloads,
             });
 
-            const signed0 = signedPayloads?.[0];
-            if (!signed0) throw new Error("No signed payload returned from wallet");
+            if (!signedPayloads || signedPayloads.length !== messages.length) {
+              throw new Error("Unexpected signed payloads response");
+            }
 
-            const signedPayloadB64 = Buffer.from(signed0).toString("base64");
+            const sigsB64 = signedPayloads.map((p) =>
+              Buffer.from(p).toString("base64")
+            );
 
             return {
               addressB64,
-              addressB58,
+              addressB58: b64PubkeyToBase58(addressB64),
               authToken: auth.auth_token,
-              signedPayloadB64,
+              sigsB64,
             };
           });
 
@@ -207,23 +215,26 @@ export const useAccountStore = create<AccountState>()(
             authToken: result.authToken,
           });
 
-          return result.signedPayloadB64;
+          return result.sigsB64;
         } catch (err) {
           if (isUserCancelled(err)) {
-            console.log("[MWA] signMessage cancelled by user");
+            console.log("[MWA] signMessages cancelled by user");
             throw new Error("USER_CANCELLED");
           }
-          console.error("[MWA] signMessage failed:", err);
+          console.error("[MWA] signMessages failed:", err);
           throw err;
         }
+      },
+
+      signMessage: async (message: string) => {
+        const sigs = await get().signMessages([message]);
+        return sigs[0];
       },
     }),
     {
       name: "account-store",
       version: 1,
       storage: createJSONStorage(() => AsyncStorage),
-
-      // Persist only what we need to silently reconnect
       partialize: (state): PersistedAccount => ({
         authToken: state.authToken,
         walletAddressB64: state.walletAddressB64,

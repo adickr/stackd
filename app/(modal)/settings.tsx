@@ -1,5 +1,5 @@
 // app/(modal)/settings.tsx
-import React, { useMemo } from "react";
+import React, { useMemo, useEffect } from "react";
 import { View, Text, Pressable, StyleSheet, Alert } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
@@ -14,7 +14,17 @@ import { useStackStore } from "../../src/stores/stackStore";
 import { useCoinStore } from "../../src/stores/coinStore";
 import { useJournalStore } from "../../src/stores/journalStore";
 import { useAccountStore } from "../../src/stores/accountStore";
-import { publishEncryptedSnapshot, restoreLatestEncryptedSnapshot } from "../../src/services/cloudJournal";
+
+import {
+  publishEncryptedSnapshot,
+  restoreLatestEncryptedSnapshot,
+} from "../../src/services/cloudJournal";
+
+import {
+  setCloudSignMessages, // batch signer injection (preferred)
+  setCloudSignMessage, // fallback wrapper for older single-sign adapters
+  setCloudWalletContext,
+} from "../../src/services/cloudStorage";
 
 import { hashObject } from "../../src/utils/journalCrypto";
 import {
@@ -82,10 +92,58 @@ export default function SettingsScreen() {
   const upsertInventory = useJournalStore((s) => s.upsertInventory);
 
   const isConnected = useAccountStore((s) => s.isConnected);
+  const walletAddressB64 = useAccountStore((s) => s.walletAddressB64);
   const walletAddressB58 = useAccountStore((s) => s.walletAddressB58);
   const connect = useAccountStore((s) => s.connect);
   const disconnect = useAccountStore((s) => s.disconnect);
+
+  // single signer always present in your store
   const signMessage = useAccountStore((s) => s.signMessage);
+
+  // optional batch signer (only if you add it to your store later)
+  const signMessagesMaybe = useAccountStore((s) => (s as any).signMessages);
+
+  // Register signer + wallet context for cloud flows
+  useEffect(() => {
+    const hasB58 = typeof walletAddressB58 === "string" && walletAddressB58.length > 0;
+    const connected = !!isConnected;
+
+    // Best: native batch signing (one prompt) if your store provides it
+    const canBatch = connected && hasB58 && typeof signMessagesMaybe === "function";
+
+    // Fallback: wrap single sign into batch (may still prompt multiple times, depending on wallet)
+    const canSingle = connected && hasB58 && typeof signMessage === "function";
+
+    if (canBatch) {
+      setCloudSignMessages(signMessagesMaybe);
+      setCloudWalletContext({
+        walletAddressB64: walletAddressB64 ?? null,
+        walletAddressB58: walletAddressB58 ?? null,
+      });
+    } else if (canSingle) {
+      // Keep BOTH for compatibility with any older code paths
+      setCloudSignMessage(signMessage);
+      setCloudSignMessages(async (messages: string[]) => {
+        const out: string[] = [];
+        for (const m of messages) out.push(await signMessage(m));
+        return out;
+      });
+      setCloudWalletContext({
+        walletAddressB64: walletAddressB64 ?? null,
+        walletAddressB58: walletAddressB58 ?? null,
+      });
+    } else {
+      setCloudSignMessage(null);
+      setCloudSignMessages(null);
+      setCloudWalletContext({ walletAddressB64: null, walletAddressB58: null });
+    }
+
+    return () => {
+      setCloudSignMessage(null);
+      setCloudSignMessages(null);
+      setCloudWalletContext({ walletAddressB64: null, walletAddressB58: null });
+    };
+  }, [isConnected, walletAddressB64, walletAddressB58, signMessage, signMessagesMaybe]);
 
   const fineOzByCoinId = useMemo(() => {
     const map: Record<string, number> = {};
@@ -150,7 +208,6 @@ export default function SettingsScreen() {
           createdAt: c.createdAt,
         }))
         .sort((a, b) => a.id.localeCompare(b.id)),
-
       entries: [...entries]
         .map((e) => ({
           id: e.id,
@@ -178,7 +235,6 @@ export default function SettingsScreen() {
 
     const snapshotHash = hashObject(snapshotPayload);
 
-    // IMPORTANT: address in the seal must be BASE58 (PublicKey string)
     const signText =
       `Stackd Journal Seal v1\n` +
       `snapshotHash:${snapshotHash}\n` +
@@ -203,62 +259,55 @@ export default function SettingsScreen() {
     addAnchor({
       id: `${snapshotPayload.createdAt}-${Math.random().toString(16).slice(2)}`,
       createdAt: snapshotPayload.createdAt,
-
       totalFineOz: snapshotPayload.totalFineOz,
       spotPrice: snapshotPayload.spotPrice,
       spotFetchedAt: snapshotPayload.spotFetchedAt,
       currency: snapshotPayload.currency,
       stackValue: snapshotPayload.stackValue,
-
       levelName: snapshotPayload.levelName,
       levelVersion: snapshotPayload.levelVersion,
-
       inventoryHash,
       snapshotHash,
-
-      // store BASE58 (matches new journalStore expectations + verifier)
       walletAddress: walletAddressB58,
       signature,
       signMessage: signText,
     });
   };
 
-  
   const handlePublishCloud = async () => {
-  console.log("[settings] publish tapped");
-  console.log("[settings] isConnected =", isConnected);
-  console.log("[settings] walletAddressB58 =", walletAddressB58);
+    console.log("[settings] publish tapped");
+    console.log("[settings] isConnected =", isConnected);
+    console.log("[settings] walletAddressB58 =", walletAddressB58);
 
-  if (!isConnected || !walletAddressB58) {
-    Alert.alert(
-      "Wallet required",
-      "Connect your wallet to publish an encrypted cloud backup."
-    );
-    return;
-  }
+    if (!isConnected || !walletAddressB58) {
+      Alert.alert(
+        "Wallet required",
+        "Connect your wallet to publish an encrypted cloud backup."
+      );
+      return;
+    }
 
-  try {
-    console.log("[settings] calling publishEncryptedSnapshot...");
-    const res = await publishEncryptedSnapshot();
-    console.log("[settings] publish ok", res);
-    Alert.alert("Published", `Cloud backup published.\nPointer: ${res.pointer}`);
-  } catch (e: any) {
-    console.log(
-      "[settings] publish error",
-      e?.message ?? String(e),
-      e
-    );
-    if (isUserCancel(e)) return;
-    Alert.alert("Publish failed", e?.message ?? String(e));
-  }
-};
-
+    try {
+      console.log("[settings] calling publishEncryptedSnapshot...");
+      const res = await publishEncryptedSnapshot();
+      console.log("[settings] publish ok", res);
+      Alert.alert("Published", `Cloud backup published.\nPointer: ${res.pointer}`);
+    } catch (e: any) {
+      console.log("[settings] publish error", e?.message ?? String(e), e);
+      if (isUserCancel(e)) return;
+      Alert.alert("Publish failed", e?.message ?? String(e));
+    }
+  };
 
   const handleRestoreCloud = async () => {
     if (!isConnected || !walletAddressB58) {
-      Alert.alert("Wallet required", "Connect your wallet to restore your encrypted cloud backup.");
+      Alert.alert(
+        "Wallet required",
+        "Connect your wallet to restore your encrypted cloud backup."
+      );
       return;
     }
+
     Alert.alert(
       "Restore from cloud?",
       "This will replace your local stack with the latest published cloud snapshot.",
@@ -270,7 +319,10 @@ export default function SettingsScreen() {
           onPress: async () => {
             try {
               const res = await restoreLatestEncryptedSnapshot();
-              Alert.alert("Restored", `Restored latest cloud snapshot.\nPointer: ${res.pointer}`);
+              Alert.alert(
+                "Restored",
+                `Restored latest cloud snapshot.\nPointer: ${res.pointer}`
+              );
             } catch (e: any) {
               Alert.alert("Restore failed", e?.message ?? String(e));
             }
@@ -419,6 +471,7 @@ export default function SettingsScreen() {
           >
             <Text style={styles.navText}>Open Journal</Text>
           </Pressable>
+
           <Pressable
             onPress={handlePublishCloud}
             style={({ pressed }) => [
@@ -440,7 +493,6 @@ export default function SettingsScreen() {
           >
             <Text style={styles.navText}>Restore from cloud</Text>
           </Pressable>
-
 
           <Pressable
             onPress={handleExport}
@@ -465,14 +517,11 @@ export default function SettingsScreen() {
           </Pressable>
 
           <Pressable
-            onPress={() => sealSnapshot()}
+            onPress={sealSnapshot}
             disabled={!canSeal}
             style={({ pressed }) => [
               styles.navBtn,
-              {
-                marginTop: 10,
-                opacity: !canSeal ? 0.45 : pressed ? 0.85 : 1,
-              },
+              { marginTop: 10, opacity: !canSeal ? 0.45 : pressed ? 0.85 : 1 },
             ]}
           >
             <Text style={styles.navText}>
