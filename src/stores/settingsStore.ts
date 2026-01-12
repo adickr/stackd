@@ -9,18 +9,30 @@ type SettingsState = {
   unit: WeightUnit;
   currency: DisplayCurrency;
 
+  // Cloud backup UI metadata (persisteds)
+  hasCloudBackup: boolean;
+  lastCloudBackupAt: number | null;
+
   setUnit: (unit: WeightUnit) => void;
   toggleUnit: () => void;
 
   setCurrency: (currency: DisplayCurrency) => void;
   toggleCurrency: () => void;
 
+  setCloudBackupState: (p: { hasCloudBackup: boolean; lastCloudBackupAt: number | null }) => void;
+  clearCloudBackupState: () => void;
+
   reset: () => void;
 };
 
-const DEFAULTS: Pick<SettingsState, "unit" | "currency"> = {
+const DEFAULTS: Pick<
+  SettingsState,
+  "unit" | "currency" | "hasCloudBackup" | "lastCloudBackupAt"
+> = {
   unit: "oz",
   currency: "ZAR",
+  hasCloudBackup: false,
+  lastCloudBackupAt: null,
 };
 
 export const useSettingsStore = create<SettingsState>()(
@@ -32,14 +44,33 @@ export const useSettingsStore = create<SettingsState>()(
       toggleUnit: () => set({ unit: get().unit === "oz" ? "g" : "oz" }),
 
       setCurrency: (currency) => set({ currency }),
-      toggleCurrency: () => set({ currency: get().currency === "ZAR" ? "USD" : "ZAR" }),
+      toggleCurrency: () =>
+        set({ currency: get().currency === "ZAR" ? "USD" : "ZAR" }),
 
+      setCloudBackupState: ({ hasCloudBackup, lastCloudBackupAt }) =>
+        set({ hasCloudBackup, lastCloudBackupAt }),
+
+      clearCloudBackupState: () =>
+        set({ hasCloudBackup: false, lastCloudBackupAt: null }),
+
+      // Reset should return app preferences to defaults (including UI backup metadata)
       reset: () => set({ ...DEFAULTS }),
     }),
     {
       name: "stackd:settings",
       storage: createJSONStorage(() => AsyncStorage),
-      version: 1,
+      version: 2, // bump because we've added fields
+      migrate: (persisted: any, version) => {
+        // If upgrading from older versions, fill in new fields safely.
+        if (version < 2) {
+          return {
+            ...persisted,
+            hasCloudBackup: false,
+            lastCloudBackupAt: null,
+          };
+        }
+        return persisted;
+      },
     }
   )
 );

@@ -5,6 +5,7 @@ import { useCoinStore } from "../stores/coinStore";
 import { useStackStore } from "../stores/stackStore";
 import { useJournalStore } from "../stores/journalStore";
 import { restoreInventoryFromSnapshot } from "./inventoryRestore";
+
 import {
   decryptJsonSecretBox,
   encryptJsonSecretBox,
@@ -13,22 +14,57 @@ import {
 } from "../utils/cryptoV1";
 import { hashObject } from "../utils/journalCrypto";
 
-import {
-  getCloudStorage,
-  getCloudSigner,
-  walletSigB64ToB58,
-} from "./cloudStorage";
+import { getCloudStorage, getCloudSigner, walletSigB64ToB58 } from "./cloudStorage";
 
 const KEY_MESSAGE_PREFIX = "STACKD_KEY_V1::";
 
 async function deriveKeyFromSigB64(sigB64: string): Promise<Uint8Array> {
-  // Your existing method (deterministic for restore)
   return await keyFromSignature(sigB64);
 }
 
-export async function publishEncryptedSnapshot(): Promise<{
+function pickTs(x: any): number | undefined {
+  const a = x?.createdAt;
+  const b = x?.publishedAt;
+  if (typeof a === "number" && Number.isFinite(a)) return a;
+  if (typeof b === "number" && Number.isFinite(b)) return b;
+  return undefined;
+}
+
+/**
+ * Relay truth-source check:
+ * - No signing
+ * - No decryption
+ * - Used for UI (Restore button + timestamp)
+ */
+async function checkCloudBackupExists(): Promise<{
+  exists: boolean;
+  pointer?: string;
+  snapshotHash?: string;
+  createdAt?: number; // normalized
+}> {
+  const account = useAccountStore.getState();
+  if (!account.isConnected || !account.walletAddressB58) {
+    return { exists: false };
+  }
+
+  const storage = getCloudStorage();
+  const latest = await storage.latest(account.walletAddressB58);
+  if (!latest) return { exists: false };
+
+  const ts = pickTs(latest);
+
+  return {
+    exists: true,
+    pointer: latest.pointer,
+    snapshotHash: latest.snapshotHash,
+    createdAt: ts,
+  };
+}
+
+async function publishEncryptedSnapshot(): Promise<{
   pointer: string;
   snapshotHash: string;
+  createdAt?: number; // relay-confirmed if provided
 }> {
   const account = useAccountStore.getState();
   if (!account.isConnected || !account.walletAddressB58) {
@@ -48,21 +84,21 @@ export async function publishEncryptedSnapshot(): Promise<{
   // 1) Get challenge (no wallet prompt)
   const ch = await storage.challenge(walletAddress, snapshotHash);
 
-  // 2) ONE wallet prompt: sign both messages in one MWA call
+  // 2) ONE wallet prompt: sign both messages in one call
   const signMessages = getCloudSigner();
   const [keySigB64, challengeSigB64] = await signMessages([
     KEY_MESSAGE_PREFIX + walletAddress,
     ch.message,
   ]);
 
-  // 3) Derive encryption key from deterministic signature (message 1)
+  // 3) Derive encryption key from signature
   const key = await deriveKeyFromSigB64(keySigB64);
 
   // 4) Encrypt snapshot
   const json = JSON.stringify(snapshot);
   const boxed = await encryptJsonSecretBox({ json, key });
 
-  // 5) Publish using challenge signature (message 2)
+  // 5) Publish using challenge signature (relay may debit credits + upload to Irys)
   const challengeSigB58 = walletSigB64ToB58(challengeSigB64);
 
   const res = await storage.publish({
@@ -78,7 +114,7 @@ export async function publishEncryptedSnapshot(): Promise<{
     },
   });
 
-  // Keep the existing local inventory backup (offline), keyed by inventoryHash.
+  // Keep local offline inventory (optional)
   const inventoryPayload = {
     coins: coins
       .map((c) => ({
@@ -106,6 +142,7 @@ export async function publishEncryptedSnapshot(): Promise<{
       }))
       .sort((a, b) => a.id.localeCompare(b.id)),
   };
+
   const inventoryHash = hashObject(inventoryPayload);
 
   useJournalStore.getState().upsertInventory({
@@ -115,7 +152,7 @@ export async function publishEncryptedSnapshot(): Promise<{
     entries: inventoryPayload.entries as any,
   });
 
-  // Anchor: reuse the SAME signature you already did for the relay (no 3rd prompt)
+  // Anchor: reuse challenge signature (no extra wallet prompt)
   useJournalStore.getState().addAnchor({
     id: `${snapshot.createdAt}-${Math.random().toString(16).slice(2)}`,
     createdAt: snapshot.createdAt,
@@ -140,12 +177,14 @@ export async function publishEncryptedSnapshot(): Promise<{
     snapshotSchemaVersion: snapshot.schemaVersion,
   } as any);
 
-  return { pointer: res.pointer, snapshotHash };
+  const createdAt = pickTs(res);
+  return { pointer: res.pointer, snapshotHash, createdAt };
 }
 
-export async function restoreLatestEncryptedSnapshot(): Promise<{
+async function restoreLatestEncryptedSnapshot(): Promise<{
   snapshotHash: string;
   pointer: string;
+  createdAt?: number;
 }> {
   const account = useAccountStore.getState();
   if (!account.isConnected || !account.walletAddressB58) {
@@ -157,9 +196,14 @@ export async function restoreLatestEncryptedSnapshot(): Promise<{
   const latest = await storage.latest(walletAddress);
   if (!latest) throw new Error("No backup found for this wallet.");
 
-  // Restore needs 1 signature (key derivation), which is fine.
+  // Restore needs 1 signature (key derivation)
   const keySigB64 = await account.signMessage(KEY_MESSAGE_PREFIX + walletAddress);
   const key = await deriveKeyFromSigB64(keySigB64);
+
+  // TS + runtime safety: ensure ciphertext is present
+  if (!latest.nonceB64 || !latest.ciphertextB64) {
+    throw new Error("Cloud backup is missing ciphertext (invalid pointer or fetch failed).");
+  }
 
   const json = await decryptJsonSecretBox({
     nonceB64: latest.nonceB64,
@@ -169,11 +213,7 @@ export async function restoreLatestEncryptedSnapshot(): Promise<{
 
   const snapshot = JSON.parse(json);
 
-  if (
-    !snapshot ||
-    snapshot.schemaVersion !== "snapshot.v1" ||
-    snapshot.walletAddress !== walletAddress
-  ) {
+  if (!snapshot || snapshot.schemaVersion !== "snapshot.v1" || snapshot.walletAddress !== walletAddress) {
     throw new Error("Snapshot schema mismatch or wrong wallet.");
   }
 
@@ -182,5 +222,12 @@ export async function restoreLatestEncryptedSnapshot(): Promise<{
     entries: snapshot.entries,
   });
 
-  return { snapshotHash: latest.snapshotHash, pointer: latest.pointer };
+  return {
+    snapshotHash: latest.snapshotHash,
+    pointer: latest.pointer,
+    createdAt: pickTs(latest),
+  };
 }
+
+// Explicit exports (prevents TS “no exported member” weirdness)
+export { publishEncryptedSnapshot, restoreLatestEncryptedSnapshot, checkCloudBackupExists };

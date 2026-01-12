@@ -1,6 +1,13 @@
 // app/(modal)/settings.tsx
-import React, { useMemo, useEffect } from "react";
-import { View, Text, Pressable, StyleSheet, Alert } from "react-native";
+import React, { useEffect, useState } from "react";
+import {
+  View,
+  Text,
+  Pressable,
+  StyleSheet,
+  Alert,
+  ScrollView,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 
@@ -10,50 +17,24 @@ import {
   DisplayCurrency,
 } from "../../src/stores/settingsStore";
 import { useSpotStore } from "../../src/stores/spotStore";
-import { useStackStore } from "../../src/stores/stackStore";
-import { useCoinStore } from "../../src/stores/coinStore";
-import { useJournalStore } from "../../src/stores/journalStore";
 import { useAccountStore } from "../../src/stores/accountStore";
 
 import {
   publishEncryptedSnapshot,
   restoreLatestEncryptedSnapshot,
+  checkCloudBackupExists,
 } from "../../src/services/cloudJournal";
 
 import {
-  setCloudSignMessages, // batch signer injection (preferred)
-  setCloudSignMessage, // fallback wrapper for older single-sign adapters
+  setCloudSignMessages,
+  setCloudSignMessage,
   setCloudWalletContext,
 } from "../../src/services/cloudStorage";
 
-import { hashObject } from "../../src/utils/journalCrypto";
 import {
   exportJournalBackup,
   importJournalBackup,
 } from "../../src/services/journalBackup";
-
-const TROY_OZ_GRAMS = 31.1035;
-const LEVEL_VERSION = "v1";
-
-type StackLevel = { name: string; minOz: number };
-const STACK_LEVELS: StackLevel[] = [
-  { name: "Seed", minOz: 0 },
-  { name: "Starter", minOz: 10 },
-  { name: "Accumulator", minOz: 50 },
-  { name: "Stacker", minOz: 150 },
-  { name: "Vaulted", minOz: 300 },
-  { name: "Stronghold", minOz: 500 },
-  { name: "Hoarder", minOz: 1000 },
-  { name: "Bullion Lord", minOz: 2500 },
-];
-
-function getStackLevel(totalOz: number) {
-  const safe = Number.isFinite(totalOz) ? totalOz : 0;
-  for (let i = STACK_LEVELS.length - 1; i >= 0; i--) {
-    if (safe >= STACK_LEVELS[i].minOz) return STACK_LEVELS[i];
-  }
-  return STACK_LEVELS[0];
-}
 
 function isUserCancel(err: any) {
   const msg = String(err?.message ?? err);
@@ -70,6 +51,11 @@ function shortAddr(a: string) {
   return `${a.slice(0, 4)}…${a.slice(-4)}`;
 }
 
+function formatWhen(ts?: number | null) {
+  if (!ts) return "Unknown";
+  return new Date(ts).toLocaleString();
+}
+
 export default function SettingsScreen() {
   const router = useRouter();
 
@@ -79,17 +65,15 @@ export default function SettingsScreen() {
   const setCurrency = useSettingsStore((s) => s.setCurrency);
   const reset = useSettingsStore((s) => s.reset);
 
+  // Persisted cloud backup UI metadata (assumes you added these to settingsStore)
+  const hasCloudBackup = useSettingsStore((s) => (s as any).hasCloudBackup ?? false);
+  const lastCloudBackupAt = useSettingsStore((s) => (s as any).lastCloudBackupAt ?? null);
+  const setCloudBackupState = useSettingsStore((s) => (s as any).setCloudBackupState);
+
+  const [showOfflineBackup, setShowOfflineBackup] = useState(false);
+  const [checkingCloud, setCheckingCloud] = useState(false);
+
   const refreshSpot = useSpotStore((s) => s.refreshSpot);
-  const spotZar = useSpotStore((s) => s.silverZarPerOz);
-  const spotUsd = useSpotStore((s) => s.silverUsdPerOz);
-  const spotFetchedAt = useSpotStore((s) => s.fetchedAt);
-
-  const entries = useStackStore((s) => s.entries);
-  const coins = useCoinStore((s) => s.coins);
-
-  const addAnchor = useJournalStore((s) => s.addAnchor);
-  const anchors = useJournalStore((s) => s.anchors);
-  const upsertInventory = useJournalStore((s) => s.upsertInventory);
 
   const isConnected = useAccountStore((s) => s.isConnected);
   const walletAddressB64 = useAccountStore((s) => s.walletAddressB64);
@@ -97,10 +81,7 @@ export default function SettingsScreen() {
   const connect = useAccountStore((s) => s.connect);
   const disconnect = useAccountStore((s) => s.disconnect);
 
-  // single signer always present in your store
   const signMessage = useAccountStore((s) => s.signMessage);
-
-  // optional batch signer (only if you add it to your store later)
   const signMessagesMaybe = useAccountStore((s) => (s as any).signMessages);
 
   // Register signer + wallet context for cloud flows
@@ -108,10 +89,7 @@ export default function SettingsScreen() {
     const hasB58 = typeof walletAddressB58 === "string" && walletAddressB58.length > 0;
     const connected = !!isConnected;
 
-    // Best: native batch signing (one prompt) if your store provides it
     const canBatch = connected && hasB58 && typeof signMessagesMaybe === "function";
-
-    // Fallback: wrap single sign into batch (may still prompt multiple times, depending on wallet)
     const canSingle = connected && hasB58 && typeof signMessage === "function";
 
     if (canBatch) {
@@ -121,7 +99,6 @@ export default function SettingsScreen() {
         walletAddressB58: walletAddressB58 ?? null,
       });
     } else if (canSingle) {
-      // Keep BOTH for compatibility with any older code paths
       setCloudSignMessage(signMessage);
       setCloudSignMessages(async (messages: string[]) => {
         const out: string[] = [];
@@ -145,172 +122,85 @@ export default function SettingsScreen() {
     };
   }, [isConnected, walletAddressB64, walletAddressB58, signMessage, signMessagesMaybe]);
 
-  const fineOzByCoinId = useMemo(() => {
-    const map: Record<string, number> = {};
-    for (const c of coins) {
-      map[c.id] = (c.fineWeightGrams ?? 0) / TROY_OZ_GRAMS;
-    }
-    return map;
-  }, [coins]);
+  // Option A: On connect, ask relay for latest backup and capture its timestamp.
+  useEffect(() => {
+    let cancelled = false;
 
-  const totalOz = useMemo(() => {
-    return entries.reduce(
-      (sum, e) => sum + e.quantity * (fineOzByCoinId[e.coinTypeId] ?? 0),
-      0
-    );
-  }, [entries, fineOzByCoinId]);
+    (async () => {
+      if (!isConnected || !walletAddressB58) return;
 
-  const spot = currency === "ZAR" ? spotZar : spotUsd;
-  const portfolioValue = spot > 0 ? totalOz * spot : 0;
-  const hasSpot = Number.isFinite(spot) && spot > 0;
+      try {
+        setCheckingCloud(true);
+        const res = await checkCloudBackupExists();
+        if (cancelled) return;
 
-  const currentFineOz = Number(totalOz.toFixed(4));
-  const currentStackValue = Math.round(portfolioValue);
-  const level = useMemo(() => getStackLevel(currentFineOz), [currentFineOz]);
+        if (res.exists) {
+          const ts =
+            typeof (res as any).publishedAt === "number"
+              ? (res as any).publishedAt
+              : typeof (res as any).createdAt === "number"
+              ? (res as any).createdAt
+              : null;
 
-  const lastAnchor = useMemo(() => {
-    if (!anchors.length) return null;
-    return anchors.reduce(
-      (latest, a) => (a.createdAt > latest.createdAt ? a : latest),
-      anchors[0]
-    );
-  }, [anchors]);
+          setCloudBackupState?.({
+            hasCloudBackup: true,
+            lastCloudBackupAt: ts,
+          });
+        } else {
+          setCloudBackupState?.({ hasCloudBackup: false, lastCloudBackupAt: null });
+        }
+      } catch {
+        // ignore; cloud might be temporarily unreachable
+      } finally {
+        if (!cancelled) setCheckingCloud(false);
+      }
+    })();
 
-  const lastFineOz = lastAnchor ? Number(lastAnchor.totalFineOz.toFixed(4)) : null;
-  const lastValue = lastAnchor ? Math.round(lastAnchor.stackValue) : null;
-
-  const hasStack = entries.length > 0;
-  const hasChangedSinceLastSeal =
-    !lastAnchor || currentFineOz !== lastFineOz || currentStackValue !== lastValue;
-
-  const canSeal =
-    isConnected &&
-    !!walletAddressB58 &&
-    hasStack &&
-    hasSpot &&
-    hasChangedSinceLastSeal;
-
-  const sealSnapshot = async () => {
-    if (!walletAddressB58) return;
-
-    const inventoryPayload = {
-      coins: [...coins]
-        .map((c) => ({
-          id: c.id,
-          name: c.name,
-          metal: c.metal,
-          purity: c.purity,
-          fineWeightGrams: c.fineWeightGrams ?? 0,
-          diameterMm: c.diameterMm,
-          thicknessMm: c.thicknessMm,
-          hallmarks: c.hallmarks ?? [],
-          notes: c.notes,
-          createdAt: c.createdAt,
-        }))
-        .sort((a, b) => a.id.localeCompare(b.id)),
-      entries: [...entries]
-        .map((e) => ({
-          id: e.id,
-          coinTypeId: e.coinTypeId,
-          quantity: e.quantity,
-          totalPaid: e.totalPaid,
-          purchasedAt: e.purchasedAt,
-        }))
-        .sort((a, b) => a.id.localeCompare(b.id)),
+    return () => {
+      cancelled = true;
     };
+  }, [isConnected, walletAddressB58, setCloudBackupState]);
 
-    const inventoryHash = hashObject(inventoryPayload);
-
-    const snapshotPayload = {
-      createdAt: Date.now(),
-      currency,
-      spotPrice: Number((spot || 0).toFixed(4)),
-      spotFetchedAt: spotFetchedAt ?? 0,
-      totalFineOz: currentFineOz,
-      stackValue: currentStackValue,
-      levelName: level.name,
-      levelVersion: LEVEL_VERSION,
-      inventoryHash,
-    };
-
-    const snapshotHash = hashObject(snapshotPayload);
-
-    const signText =
-      `Stackd Journal Seal v1\n` +
-      `snapshotHash:${snapshotHash}\n` +
-      `address:${walletAddressB58}`;
-
-    let signature: string;
+  const handleConnectForCloud = async () => {
     try {
-      signature = await signMessage(signText);
+      await connect();
     } catch (e: any) {
       if (isUserCancel(e)) return;
-      Alert.alert("Signing failed", e?.message ?? String(e));
-      return;
+      Alert.alert("Wallet connect failed", e?.message ?? String(e));
     }
-
-    upsertInventory({
-      inventoryHash,
-      createdAt: snapshotPayload.createdAt,
-      coins: inventoryPayload.coins as any,
-      entries: inventoryPayload.entries as any,
-    });
-
-    addAnchor({
-      id: `${snapshotPayload.createdAt}-${Math.random().toString(16).slice(2)}`,
-      createdAt: snapshotPayload.createdAt,
-      totalFineOz: snapshotPayload.totalFineOz,
-      spotPrice: snapshotPayload.spotPrice,
-      spotFetchedAt: snapshotPayload.spotFetchedAt,
-      currency: snapshotPayload.currency,
-      stackValue: snapshotPayload.stackValue,
-      levelName: snapshotPayload.levelName,
-      levelVersion: snapshotPayload.levelVersion,
-      inventoryHash,
-      snapshotHash,
-      walletAddress: walletAddressB58,
-      signature,
-      signMessage: signText,
-    });
   };
 
   const handlePublishCloud = async () => {
-    console.log("[settings] publish tapped");
-    console.log("[settings] isConnected =", isConnected);
-    console.log("[settings] walletAddressB58 =", walletAddressB58);
-
     if (!isConnected || !walletAddressB58) {
-      Alert.alert(
-        "Wallet required",
-        "Connect your wallet to publish an encrypted cloud backup."
-      );
+      Alert.alert("Wallet required", "Connect your wallet to enable cloud backup.");
       return;
     }
 
     try {
-      console.log("[settings] calling publishEncryptedSnapshot...");
       const res = await publishEncryptedSnapshot();
-      console.log("[settings] publish ok", res);
-      Alert.alert("Published", `Cloud backup published.\nPointer: ${res.pointer}`);
+
+      // immediate UI update (local), relay timestamp will show after reconnect or next check
+      const now = Date.now();
+      setCloudBackupState?.({ hasCloudBackup: true, lastCloudBackupAt: now });
+
+      console.log("[settings] cloud backup ok", res);
+      Alert.alert("Backed up", "Your encrypted cloud backup was saved.");
     } catch (e: any) {
-      console.log("[settings] publish error", e?.message ?? String(e), e);
+      console.log("[settings] cloud backup error", e?.message ?? String(e), e);
       if (isUserCancel(e)) return;
-      Alert.alert("Publish failed", e?.message ?? String(e));
+      Alert.alert("Backup failed", e?.message ?? String(e));
     }
   };
 
   const handleRestoreCloud = async () => {
     if (!isConnected || !walletAddressB58) {
-      Alert.alert(
-        "Wallet required",
-        "Connect your wallet to restore your encrypted cloud backup."
-      );
+      Alert.alert("Wallet required", "Connect your wallet to restore from cloud.");
       return;
     }
 
     Alert.alert(
-      "Restore from cloud?",
-      "This will replace your local stack with the latest published cloud snapshot.",
+      "Restore backup?",
+      "This will replace the portfolio on this phone with your latest cloud backup.",
       [
         { text: "Cancel", style: "cancel" },
         {
@@ -319,11 +209,11 @@ export default function SettingsScreen() {
           onPress: async () => {
             try {
               const res = await restoreLatestEncryptedSnapshot();
-              Alert.alert(
-                "Restored",
-                `Restored latest cloud snapshot.\nPointer: ${res.pointer}`
-              );
+              console.log("[settings] cloud restore ok", res);
+              Alert.alert("Restored", "Your portfolio has been restored.");
             } catch (e: any) {
+              console.log("[settings] cloud restore error", e?.message ?? String(e), e);
+              if (isUserCancel(e)) return;
               Alert.alert("Restore failed", e?.message ?? String(e));
             }
           },
@@ -355,37 +245,37 @@ export default function SettingsScreen() {
   };
 
   const handleImport = async () => {
-    Alert.alert(
-      "Import backup?",
-      "This will replace your local journal backups on this device.\n\nAfter importing, open Journal → Restore.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Import",
-          style: "destructive",
-          onPress: async () => {
-            const res = await importJournalBackup("replace");
+    Alert.alert("Import backup?", "This will replace your local backups on this device.", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Import",
+        style: "destructive",
+        onPress: async () => {
+          const res = await importJournalBackup("replace");
 
-            if (!res.ok) {
-              if (res.reason === "cancelled") return;
-              Alert.alert("Import failed", res.message ?? "Unknown error");
-              return;
-            }
+          if (!res.ok) {
+            if (res.reason === "cancelled") return;
+            Alert.alert("Import failed", res.message ?? "Unknown error");
+            return;
+          }
 
-            const report = res.report;
-            Alert.alert(
-              "Imported",
-              `Anchors: ${report.anchorsImported}\nInventories: ${report.inventoriesImported}`
-            );
-          },
+          const report = res.report;
+          Alert.alert(
+            "Imported",
+            `Anchors: ${report.anchorsImported}\nInventories: ${report.inventoriesImported}`
+          );
         },
-      ]
-    );
+      },
+    ]);
   };
 
   return (
-    <SafeAreaView style={styles.safe} edges={["top"]}>
-      <View style={styles.container}>
+    <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
+      >
         <View style={styles.headerRow}>
           <Text style={styles.title}>Settings</Text>
 
@@ -425,28 +315,52 @@ export default function SettingsScreen() {
           <Text style={styles.helper}>Spot refreshes when you switch currency.</Text>
         </Section>
 
-        <Section title="Account">
+        <Section title="Cloud backup">
           {!isConnected ? (
-            <Pressable
-              onPress={async () => {
-                try {
-                  await connect();
-                } catch (e: any) {
-                  if (isUserCancel(e)) return;
-                  Alert.alert("Wallet connect failed", e?.message ?? String(e));
-                }
-              }}
-              style={({ pressed }) => [styles.navBtn, pressed && { opacity: 0.85 }]}
-            >
-              <Text style={styles.navText}>Connect wallet</Text>
-            </Pressable>
+            <>
+              <Pressable
+                onPress={handleConnectForCloud}
+                style={({ pressed }) => [styles.navBtn, pressed && { opacity: 0.85 }]}
+              >
+                <Text style={styles.navText}>Connect wallet</Text>
+              </Pressable>
+
+              <Text style={styles.helper}>
+                Connect your wallet to enable encrypted cloud backups.
+              </Text>
+            </>
           ) : (
             <>
               <View style={styles.accountPill}>
-                <Text style={styles.accountText} numberOfLines={1}>
-                  Connected: {walletAddressB58 ? shortAddr(walletAddressB58) : "—"}
+                <Text style={styles.accountText} numberOfLines={2}>
+                  Wallet connected: {walletAddressB58 ? shortAddr(walletAddressB58) : "—"}
+                  {"\n"}Last backup: {checkingCloud ? "Checking…" : formatWhen(lastCloudBackupAt)}
                 </Text>
               </View>
+
+              <Pressable
+                onPress={handlePublishCloud}
+                style={({ pressed }) => [
+                  styles.navBtn,
+                  { marginTop: 10 },
+                  pressed && { opacity: 0.85 },
+                ]}
+              >
+                <Text style={styles.navText}>Back up now</Text>
+              </Pressable>
+
+              {hasCloudBackup ? (
+                <Pressable
+                  onPress={handleRestoreCloud}
+                  style={({ pressed }) => [
+                    styles.navBtn,
+                    { marginTop: 10 },
+                    pressed && { opacity: 0.85 },
+                  ]}
+                >
+                  <Text style={styles.navText}>Restore backup</Text>
+                </Pressable>
+              ) : null}
 
               <Pressable
                 onPress={disconnect}
@@ -455,96 +369,58 @@ export default function SettingsScreen() {
                   { marginTop: 10, opacity: pressed ? 0.85 : 1 },
                 ]}
               >
-                <Text style={styles.navText}>Disconnect</Text>
+                <Text style={styles.navText}>Disconnect wallet</Text>
               </Pressable>
+
+              <Text style={styles.helper}>
+                Backups are encrypted and can only be restored using your wallet.
+              </Text>
             </>
           )}
-          <Text style={styles.helper}>
-            Wallet connection unlocks journal sealing and backups.
-          </Text>
         </Section>
 
-        <Section title="Journal">
+        <Section title="Offline backup">
           <Pressable
-            onPress={() => router.push("/journal")}
-            style={({ pressed }) => [styles.navBtn, pressed && { opacity: 0.85 }]}
+            onPress={() => setShowOfflineBackup((v) => !v)}
+            style={({ pressed }) => [styles.linkBtn, pressed && { opacity: 0.75 }]}
+            hitSlop={10}
           >
-            <Text style={styles.navText}>Open Journal</Text>
-          </Pressable>
-
-          <Pressable
-            onPress={handlePublishCloud}
-            style={({ pressed }) => [
-              styles.navBtn,
-              { marginTop: 10 },
-              pressed && { opacity: 0.85 },
-            ]}
-          >
-            <Text style={styles.navText}>Publish encrypted cloud backup</Text>
-          </Pressable>
-
-          <Pressable
-            onPress={handleRestoreCloud}
-            style={({ pressed }) => [
-              styles.navBtn,
-              { marginTop: 10 },
-              pressed && { opacity: 0.85 },
-            ]}
-          >
-            <Text style={styles.navText}>Restore from cloud</Text>
-          </Pressable>
-
-          <Pressable
-            onPress={handleExport}
-            style={({ pressed }) => [
-              styles.navBtn,
-              { marginTop: 10 },
-              pressed && { opacity: 0.85 },
-            ]}
-          >
-            <Text style={styles.navText}>Export backup</Text>
-          </Pressable>
-
-          <Pressable
-            onPress={handleImport}
-            style={({ pressed }) => [
-              styles.navBtn,
-              { marginTop: 10 },
-              pressed && { opacity: 0.85 },
-            ]}
-          >
-            <Text style={styles.navText}>Import backup</Text>
-          </Pressable>
-
-          <Pressable
-            onPress={sealSnapshot}
-            disabled={!canSeal}
-            style={({ pressed }) => [
-              styles.navBtn,
-              { marginTop: 10, opacity: !canSeal ? 0.45 : pressed ? 0.85 : 1 },
-            ]}
-          >
-            <Text style={styles.navText}>
-              {canSeal ? "Seal & sign snapshot" : "Sealed ✓"}
+            <Text style={styles.linkText}>
+              {showOfflineBackup ? "Hide offline backup" : "Show offline backup"}
             </Text>
           </Pressable>
 
-          <Text style={styles.helper}>
-            {!isConnected
-              ? "Connect wallet to unlock sealing."
-              : !hasStack
-              ? "Add metal to your stack to enable sealing."
-              : !hasSpot
-              ? "Pull to refresh to fetch spot before sealing."
-              : canSeal
-              ? "Creates a signed seal of your stack + inventory hash."
-              : "Latest signed seal matches your current stack."}
-          </Text>
+          {showOfflineBackup ? (
+            <>
+              <Pressable
+                onPress={handleExport}
+                style={({ pressed }) => [
+                  styles.navBtn,
+                  { marginTop: 12 },
+                  pressed && { opacity: 0.85 },
+                ]}
+              >
+                <Text style={styles.navText}>Export backup</Text>
+              </Pressable>
 
-          <Text style={[styles.helper, { marginTop: 8 }]}>
-            Stackd never has access to your wallet keys. Signing is used only to prove
-            ownership and seal journal entries. No funds are moved.
-          </Text>
+              <Pressable
+                onPress={handleImport}
+                style={({ pressed }) => [
+                  styles.navBtn,
+                  { marginTop: 10 },
+                  pressed && { opacity: 0.85 },
+                ]}
+              >
+                <Text style={styles.navText}>Import backup</Text>
+              </Pressable>
+
+              <Text style={styles.helper}>
+                Stores a backup file on your device. Useful for reviews or moving data manually.
+              </Text>
+            </>
+          ) : (
+            <Text style={styles.helper}>Optional: export/import a local backup file.</Text>
+          )}
         </Section>
 
         <Pressable
@@ -556,7 +432,7 @@ export default function SettingsScreen() {
         >
           <Text style={styles.resetText}>Reset to defaults</Text>
         </Pressable>
-      </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
@@ -605,7 +481,9 @@ function Segmented<T extends string>({
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: "#fff" },
-  container: { flex: 1, padding: 16 },
+
+  scroll: { flex: 1 },
+  scrollContent: { padding: 16, paddingBottom: 28 },
 
   headerRow: {
     flexDirection: "row",
@@ -665,6 +543,17 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.08)",
   },
   accountText: { fontSize: 12, fontWeight: "800", opacity: 0.75 },
+
+  linkBtn: {
+    alignSelf: "flex-start",
+    paddingVertical: 6,
+  },
+  linkText: {
+    fontSize: 13,
+    fontWeight: "900",
+    opacity: 0.7,
+    textDecorationLine: "underline",
+  },
 
   resetBtn: {
     marginTop: 6,
