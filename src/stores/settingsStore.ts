@@ -3,13 +3,15 @@ import { persist, createJSONStorage } from "zustand/middleware";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 export type WeightUnit = "oz" | "g";
-export type DisplayCurrency = "ZAR" | "USD";
+
+// ✅ You can add more later
+export type DisplayCurrency = "USD" | "ZAR" | "EUR" | "GBP";
 
 type SettingsState = {
   unit: WeightUnit;
   currency: DisplayCurrency;
 
-  // Cloud backup UI metadata (persisteds)
+  // Cloud backup UI metadata (persisted)
   hasCloudBackup: boolean;
   lastCloudBackupAt: number | null;
 
@@ -21,8 +23,6 @@ type SettingsState = {
 
   setCloudBackupState: (p: { hasCloudBackup: boolean; lastCloudBackupAt: number | null }) => void;
   clearCloudBackupState: () => void;
-
-  reset: () => void;
 };
 
 const DEFAULTS: Pick<
@@ -30,10 +30,14 @@ const DEFAULTS: Pick<
   "unit" | "currency" | "hasCloudBackup" | "lastCloudBackupAt"
 > = {
   unit: "oz",
-  currency: "ZAR",
+  currency: "USD", // ✅ default
   hasCloudBackup: false,
   lastCloudBackupAt: null,
 };
+
+function isValidCurrency(x: any): x is DisplayCurrency {
+  return x === "USD" || x === "ZAR" || x === "EUR" || x === "GBP";
+}
 
 export const useSettingsStore = create<SettingsState>()(
   persist(
@@ -44,31 +48,49 @@ export const useSettingsStore = create<SettingsState>()(
       toggleUnit: () => set({ unit: get().unit === "oz" ? "g" : "oz" }),
 
       setCurrency: (currency) => set({ currency }),
+
+      // Keep toggle for quick dev/testing; it only flips USD/ZAR
       toggleCurrency: () =>
-        set({ currency: get().currency === "ZAR" ? "USD" : "ZAR" }),
+        set({ currency: get().currency === "USD" ? "ZAR" : "USD" }),
 
       setCloudBackupState: ({ hasCloudBackup, lastCloudBackupAt }) =>
         set({ hasCloudBackup, lastCloudBackupAt }),
 
       clearCloudBackupState: () =>
         set({ hasCloudBackup: false, lastCloudBackupAt: null }),
-
-      // Reset should return app preferences to defaults (including UI backup metadata)
-      reset: () => set({ ...DEFAULTS }),
     }),
     {
       name: "stackd:settings",
       storage: createJSONStorage(() => AsyncStorage),
-      version: 2, // bump because we've added fields
+      version: 4, // bump
       migrate: (persisted: any, version) => {
-        // If upgrading from older versions, fill in new fields safely.
+        // v1 -> v2: cloud backup fields added
         if (version < 2) {
-          return {
+          persisted = {
             ...persisted,
             hasCloudBackup: false,
             lastCloudBackupAt: null,
           };
         }
+
+        // v2 -> v3: USD default guard
+        if (version < 3) {
+          const cur = persisted?.currency;
+          persisted = {
+            ...persisted,
+            currency: isValidCurrency(cur) ? cur : "USD",
+          };
+        }
+
+        // v3 -> v4: validate currency again (now we allow EUR/GBP)
+        if (version < 4) {
+          const cur = persisted?.currency;
+          persisted = {
+            ...persisted,
+            currency: isValidCurrency(cur) ? cur : "USD",
+          };
+        }
+
         return persisted;
       },
     }

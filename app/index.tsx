@@ -17,7 +17,6 @@ import { useCoinStore } from "../src/stores/coinStore";
 import { useSpotStore } from "../src/stores/spotStore";
 import { useSettingsStore } from "../src/stores/settingsStore";
 
-
 import { MyStackConviction } from "../src/components/MyStackConviction";
 
 // tokens
@@ -60,29 +59,36 @@ function getNextLevel(totalOz: number) {
 
 /* ---------------- helpers ---------------- */
 
-function formatCurrency(value: number, currency: "ZAR" | "USD") {
-  try {
-    return new Intl.NumberFormat(currency === "ZAR" ? "en-ZA" : "en-US", {
-      style: "currency",
-      currency,
-      maximumFractionDigits: 0,
-    }).format(value);
-  } catch {
-    return `${currency} ${Math.round(value).toLocaleString()}`;
+function localeForCurrency(c: string) {
+  switch (c) {
+    case "ZAR":
+      return "en-ZA";
+    case "EUR":
+      return "en-IE";
+    case "GBP":
+      return "en-GB";
+    case "USD":
+    default:
+      return "en-US";
   }
 }
 
-function formatSpot(value: number, currency: "ZAR" | "USD") {
-  if (!Number.isFinite(value) || value <= 0) return "—";
+function formatMoney(value: number, currency: string, maxFractionDigits = 0) {
+  const safe = Number.isFinite(value) ? value : 0;
   try {
-    return new Intl.NumberFormat(currency === "ZAR" ? "en-ZA" : "en-US", {
+    return new Intl.NumberFormat(localeForCurrency(currency), {
       style: "currency",
       currency,
-      maximumFractionDigits: 2,
-    }).format(value);
+      maximumFractionDigits: maxFractionDigits,
+    }).format(safe);
   } catch {
-    return `${currency} ${value.toFixed(2)}`;
+    return `${currency} ${Math.round(safe).toLocaleString()}`;
   }
+}
+
+function formatSpot(value: number, currency: string) {
+  if (!Number.isFinite(value) || value <= 0) return "—";
+  return formatMoney(value, currency, 2);
 }
 
 function formatWeight(oz: number, unit: "oz" | "g") {
@@ -95,6 +101,154 @@ function formatWeight(oz: number, unit: "oz" | "g") {
 
 function ymd(ms: number) {
   return new Date(ms).toISOString().slice(0, 10);
+}
+
+function monthKey(ms: number) {
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function monthTitle(ms: number) {
+  return new Date(ms).toLocaleString(undefined, { month: "long", year: "numeric" });
+}
+
+type PnlMeta = {
+  ok: boolean;
+  pct: number; // e.g. 12.3 for +12.3%
+  amount: number; // in display currency
+  kind: "up" | "down" | "flat";
+};
+
+function computePnl(paidDisplay: number, currentValue: number): PnlMeta {
+  if (!Number.isFinite(paidDisplay) || paidDisplay <= 0) {
+    return { ok: false, pct: 0, amount: 0, kind: "flat" };
+  }
+  const amount = currentValue - paidDisplay;
+  const pct = (amount / paidDisplay) * 100;
+
+  const eps = 0.001;
+  const kind: PnlMeta["kind"] =
+    amount > eps ? "up" : amount < -eps ? "down" : "flat";
+
+  return { ok: true, pct, amount, kind };
+}
+
+function formatPct(pct: number) {
+  if (!Number.isFinite(pct)) return "—";
+  const abs = Math.abs(pct);
+  if (abs < 10) return `${pct.toFixed(1)}%`;
+  return `${pct.toFixed(0)}%`;
+}
+
+/* ---------------- timeline types ---------------- */
+
+type TimelineRowItem = {
+  id: string;
+  coinName: string;
+  quantity: number;
+  totalPaid: number; // ZAR today
+  purchasedAt: number;
+  fineOz: number;
+};
+
+type TimelineSection = {
+  key: string;
+  title: string;
+  items: TimelineRowItem[];
+};
+
+function TimelineRow({
+  item,
+  isFirst,
+  isLast,
+  onPress,
+  spotPerOzDisplay,
+  spotPerOzZar,
+  displayCurrency,
+}: {
+  item: TimelineRowItem;
+  isFirst: boolean;
+  isLast: boolean;
+  onPress: () => void;
+  spotPerOzDisplay: number;
+  spotPerOzZar: number;
+  displayCurrency: string;
+}) {
+  const fineOz = Number.isFinite(item.fineOz) ? item.fineOz : 0;
+
+  const currentValue =
+    spotPerOzDisplay > 0 && fineOz > 0 ? fineOz * spotPerOzDisplay : 0;
+
+  // Convert paid ZAR -> display currency using current implied FX from spot
+  const fxZarToDisplay =
+    displayCurrency === "ZAR"
+      ? 1
+      : spotPerOzDisplay > 0 && spotPerOzZar > 0
+      ? spotPerOzDisplay / spotPerOzZar
+      : 0;
+
+  const paidDisplay =
+    fxZarToDisplay > 0 && Number.isFinite(item.totalPaid)
+      ? item.totalPaid * fxZarToDisplay
+      : 0;
+
+  const pnl = computePnl(paidDisplay, currentValue);
+
+  const pnlColor =
+    pnl.kind === "up" ? styles.pnlUp : pnl.kind === "down" ? styles.pnlDown : styles.pnlFlat;
+
+  const pnlIcon =
+    pnl.kind === "up" ? "arrow-up" : pnl.kind === "down" ? "arrow-down" : "remove";
+
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [styles.timelineRow, pressed && { opacity: 0.9 }]}
+    >
+      {/* Rail */}
+      <View style={styles.rail}>
+        {!isFirst ? <View style={styles.line} /> : <View style={styles.lineSpacer} />}
+        <View style={styles.dot} />
+        {!isLast ? <View style={styles.line} /> : <View style={styles.lineSpacer} />}
+      </View>
+
+      {/* Card */}
+      <View style={styles.timelineCard}>
+        <View style={styles.timelineTop}>
+          <Text style={styles.purchaseTitle}>{item.coinName}</Text>
+          <Ionicons
+            name="chevron-forward"
+            size={18}
+            color={colors.ink}
+            style={{ opacity: 0.45 }}
+          />
+        </View>
+
+        <Text style={styles.purchaseSub}>
+          {ymd(item.purchasedAt)} • Qty {item.quantity} • {fineOz.toFixed(2)} oz
+        </Text>
+
+        <Text style={styles.purchaseSub}>
+          Paid: {formatMoney(item.totalPaid, "ZAR", 0)}{"  "}• Current:{" "}
+          {spotPerOzDisplay > 0 ? formatMoney(currentValue, displayCurrency, 0) : "—"}
+        </Text>
+
+        <View style={styles.pnlRow}>
+          <Ionicons
+            name={pnl.ok ? (pnlIcon as any) : "remove"}
+            size={14}
+            color={pnl.ok ? (pnl.kind === "up" ? "#008C46" : pnl.kind === "down" ? "#C83232" : "#666") : "#666"}
+            style={{ opacity: 0.95 }}
+          />
+          <Text style={[styles.pnlText, pnl.ok ? pnlColor : styles.pnlFlat]}>
+            {pnl.ok
+              ? `${formatPct(pnl.pct)} (${formatMoney(pnl.amount, displayCurrency, 0)})`
+              : "PnL: —"}
+          </Text>
+        </View>
+      </View>
+    </Pressable>
+  );
 }
 
 /* ---------------- screen ---------------- */
@@ -111,14 +265,16 @@ export default function HomeScreen() {
   const seedIfEmpty = useCoinStore((s) => s.seedIfEmpty);
   const getCoin = useCoinStore((s) => s.getCoin);
 
-  const spotZar = useSpotStore((s) => s.silverZarPerOz);
-  const spotUsd = useSpotStore((s) => s.silverUsdPerOz);
   const fetchedAt = useSpotStore((s) => s.fetchedAt);
   const refreshSpot = useSpotStore((s) => s.refreshSpot);
   const isLoading = useSpotStore((s) => s.isLoading);
   const spotError = useSpotStore((s) => s.error);
   const clearSpotError = useSpotStore((s) => s.clearError);
 
+  // generalized map for EUR/GBP etc
+  const perOzByCurrency = useSpotStore((s) => s.silverPerOzByCurrency);
+  const fallbackZar = useSpotStore((s) => s.silverZarPerOz);
+  const fallbackUsd = useSpotStore((s) => s.silverUsdPerOz);
 
   // UI state
   const [showPurchases, setShowPurchases] = useState(false);
@@ -143,9 +299,7 @@ export default function HomeScreen() {
 
   // Keep pagination sane when entries change
   useEffect(() => {
-    setVisibleCount((v) =>
-      Math.min(Math.max(PAGE_SIZE, v), entries.length || PAGE_SIZE)
-    );
+    setVisibleCount((v) => Math.min(Math.max(PAGE_SIZE, v), entries.length || PAGE_SIZE));
   }, [entries.length]);
 
   // If stack shrinks, keep "show all" from feeling weird
@@ -168,16 +322,58 @@ export default function HomeScreen() {
     );
   }, [entries, fineOzByCoinId]);
 
-  const spot = currency === "ZAR" ? spotZar : spotUsd;
-  const portfolioValue = spot > 0 ? totalOz * spot : 0;
+  const spotDisplay = useMemo(() => {
+    const fromMap = perOzByCurrency?.[currency];
+    if (typeof fromMap === "number" && fromMap > 0) return fromMap;
 
+    // fallback for older persisted store / before first refresh
+    if (currency === "ZAR") return fallbackZar;
+    if (currency === "USD") return fallbackUsd;
+    return 0;
+  }, [perOzByCurrency, currency, fallbackZar, fallbackUsd]);
 
-  // ✅ Hero level chip
+  const spotZar = useMemo(() => {
+    const fromMap = perOzByCurrency?.["ZAR"];
+    if (typeof fromMap === "number" && fromMap > 0) return fromMap;
+    return fallbackZar;
+  }, [perOzByCurrency, fallbackZar]);
+
+  const portfolioValue = spotDisplay > 0 ? totalOz * spotDisplay : 0;
+
+  // Portfolio "paid" total is ZAR (today), so convert to display currency with current implied FX
+  const totalPaidZar = useMemo(() => {
+    return entries.reduce((sum, e) => sum + (Number.isFinite(e.totalPaid) ? e.totalPaid : 0), 0);
+  }, [entries]);
+
+  const fxZarToDisplay = useMemo(() => {
+    if (currency === "ZAR") return 1;
+    if (spotDisplay > 0 && spotZar > 0) return spotDisplay / spotZar;
+    return 0;
+  }, [currency, spotDisplay, spotZar]);
+
+  const totalPaidDisplay = useMemo(() => {
+    if (fxZarToDisplay <= 0) return 0;
+    return totalPaidZar * fxZarToDisplay;
+  }, [totalPaidZar, fxZarToDisplay]);
+
+  const portfolioPnl = useMemo(() => {
+    return computePnl(totalPaidDisplay, portfolioValue);
+  }, [totalPaidDisplay, portfolioValue]);
+
+  const portfolioPnlColor =
+    portfolioPnl.kind === "up"
+      ? styles.pnlUp
+      : portfolioPnl.kind === "down"
+      ? styles.pnlDown
+      : styles.pnlFlat;
+
+  const portfolioPnlIcon =
+    portfolioPnl.kind === "up" ? "arrow-up" : portfolioPnl.kind === "down" ? "arrow-down" : "remove";
+
+  // Hero level chip
   const level = useMemo(() => getStackLevel(totalOz), [totalOz]);
   const nextLevel = useMemo(() => getNextLevel(totalOz), [totalOz]);
-  const ozToNext = nextLevel
-    ? Math.max(0, nextLevel.minOz - totalOz)
-    : 0;
+  const ozToNext = nextLevel ? Math.max(0, nextLevel.minOz - totalOz) : 0;
 
   /* --------- My Stack (conviction bars) --------- */
 
@@ -185,8 +381,7 @@ export default function HomeScreen() {
     const byId: Record<string, number> = {};
     for (const e of entries) {
       byId[e.coinTypeId] =
-        (byId[e.coinTypeId] ?? 0) +
-        e.quantity * (fineOzByCoinId[e.coinTypeId] ?? 0);
+        (byId[e.coinTypeId] ?? 0) + e.quantity * (fineOzByCoinId[e.coinTypeId] ?? 0);
     }
 
     return Object.entries(byId)
@@ -207,28 +402,48 @@ export default function HomeScreen() {
   const hiddenStackCount = Math.max(0, allStackRows.length - STACK_TOP_N);
   const canExpandStack = !showAllStack && hiddenStackCount > 0;
 
-  /* --------- Purchases list (paged) --------- */
+  /* --------- Purchases list (timeline + paging) --------- */
 
-  const purchaseRows = useMemo(() => {
+  const purchaseRows = useMemo<TimelineRowItem[]>(() => {
     return entries
       .slice()
       .sort((a, b) => b.purchasedAt - a.purchasedAt)
       .map((e) => {
         const coin = getCoin(e.coinTypeId);
+        const fineOzPerUnit = fineOzByCoinId[e.coinTypeId] ?? 0;
+        const fineOz = e.quantity * fineOzPerUnit;
+
         return {
           id: e.id,
           coinName: coin?.name ?? "Unknown coin",
           quantity: e.quantity,
           totalPaid: e.totalPaid,
           purchasedAt: e.purchasedAt,
+          fineOz,
         };
       });
-  }, [entries, getCoin]);
+  }, [entries, getCoin, fineOzByCoinId]);
 
-  const visiblePurchases = showPurchases
-    ? purchaseRows.slice(0, visibleCount)
-    : [];
+  // paging before grouping
+  const visiblePurchaseRows = showPurchases ? purchaseRows.slice(0, visibleCount) : [];
   const canLoadMore = showPurchases && visibleCount < purchaseRows.length;
+
+  const purchaseSections = useMemo<TimelineSection[]>(() => {
+    if (!showPurchases) return [];
+    const map = new Map<string, { ms: number; items: TimelineRowItem[] }>();
+
+    for (const p of visiblePurchaseRows) {
+      const t = Number(p.purchasedAt ?? 0);
+      const key = monthKey(t);
+      const existing = map.get(key);
+      if (!existing) map.set(key, { ms: t, items: [p] });
+      else existing.items.push(p);
+    }
+
+    return Array.from(map.entries())
+      .map(([key, v]) => ({ key, title: monthTitle(v.ms), items: v.items }))
+      .sort((a, b) => (a.key < b.key ? 1 : -1)); // newest month first
+  }, [showPurchases, visiblePurchaseRows]);
 
   /* ---------------- render ---------------- */
 
@@ -236,9 +451,7 @@ export default function HomeScreen() {
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <ScrollView
         contentContainerStyle={styles.container}
-        refreshControl={
-          <RefreshControl refreshing={isLoading} onRefresh={refreshSpot} />
-        }
+        refreshControl={<RefreshControl refreshing={isLoading} onRefresh={refreshSpot} />}
       >
         {/* Hero */}
         <View style={styles.hero}>
@@ -254,7 +467,7 @@ export default function HomeScreen() {
             </Pressable>
           </View>
 
-          {/* ✅ Level chip (gamification) */}
+          {/* Level chip */}
           <View style={styles.levelRow}>
             <View style={styles.levelChip}>
               <Ionicons
@@ -278,12 +491,33 @@ export default function HomeScreen() {
             )}
           </View>
 
-          <Text style={styles.heroValue}>
-            {formatCurrency(portfolioValue, currency)}
-          </Text>
+          <Text style={styles.heroValue}>{formatMoney(portfolioValue, currency, 0)}</Text>
+
+          {/* ✅ Portfolio PnL line */}
+          <View style={styles.heroPnlRow}>
+            <Ionicons
+              name={portfolioPnl.ok ? (portfolioPnlIcon as any) : "remove"}
+              size={14}
+              color={
+                portfolioPnl.ok
+                  ? portfolioPnl.kind === "up"
+                    ? "#008C46"
+                    : portfolioPnl.kind === "down"
+                    ? "#C83232"
+                    : "#666"
+                  : "#666"
+              }
+              style={{ opacity: 0.95 }}
+            />
+            <Text style={[styles.heroPnlText, portfolioPnl.ok ? portfolioPnlColor : styles.pnlFlat]}>
+              {portfolioPnl.ok
+                ? `${formatPct(portfolioPnl.pct)} (${formatMoney(portfolioPnl.amount, currency, 0)})`
+                : "PnL: —"}
+            </Text>
+          </View>
 
           <Text style={styles.heroSub}>
-            {formatWeight(totalOz, unit)} • {formatSpot(spot, currency)}/oz •{" "}
+            {formatWeight(totalOz, unit)} • {formatSpot(spotDisplay, currency)}/oz •{" "}
             {fetchedAt ? "updated" : "pull to refresh"}
           </Text>
 
@@ -321,18 +555,12 @@ export default function HomeScreen() {
             <MyStackConviction unit={unit} slices={visibleStackRows} />
           </View>
 
-          {/* Expand / collapse */}
           {canExpandStack ? (
             <Pressable
               onPress={() => setShowAllStack(true)}
-              style={({ pressed }) => [
-                styles.expandBtn,
-                pressed && { opacity: 0.9 },
-              ]}
+              style={({ pressed }) => [styles.expandBtn, pressed && { opacity: 0.9 }]}
             >
-              <Text style={styles.expandText}>
-                + {hiddenStackCount} smaller positions
-              </Text>
+              <Text style={styles.expandText}>+ {hiddenStackCount} smaller positions</Text>
               <Ionicons
                 name="chevron-down"
                 size={18}
@@ -345,10 +573,7 @@ export default function HomeScreen() {
           {showAllStack && allStackRows.length > STACK_TOP_N ? (
             <Pressable
               onPress={() => setShowAllStack(false)}
-              style={({ pressed }) => [
-                styles.expandBtn,
-                pressed && { opacity: 0.9 },
-              ]}
+              style={({ pressed }) => [styles.expandBtn, pressed && { opacity: 0.9 }]}
             >
               <Text style={styles.expandText}>Show top only</Text>
               <Ionicons
@@ -361,7 +586,7 @@ export default function HomeScreen() {
           ) : null}
         </View>
 
-        {/* Purchase history (hide section entirely when none) */}
+        {/* Purchase history */}
         {purchaseRows.length > 0 ? (
           <View style={styles.card}>
             <View style={styles.cardHeaderRow}>
@@ -371,10 +596,7 @@ export default function HomeScreen() {
 
             <Pressable
               onPress={() => setShowPurchases((v) => !v)}
-              style={({ pressed }) => [
-                styles.toggleBtn,
-                pressed && { opacity: 0.9 },
-              ]}
+              style={({ pressed }) => [styles.toggleBtn, pressed && { opacity: 0.9 }]}
             >
               <Text style={styles.toggleText}>
                 {showPurchases ? "Hide history" : "View history"}
@@ -388,48 +610,37 @@ export default function HomeScreen() {
             </Pressable>
 
             {showPurchases ? (
-              <View style={{ marginTop: spacing.lg, gap: spacing.md }}>
-                {visiblePurchases.map((p) => (
-                  <Pressable
-                    key={p.id}
-                    onPress={() =>
-                      router.push(
-                        `/stack/add?entryId=${encodeURIComponent(p.id)}`
-                      )
-                    }
-                    style={({ pressed }) => [
-                      styles.purchaseRow,
-                      pressed && { opacity: 0.9 },
-                    ]}
-                  >
-                    <View style={{ flex: 1, gap: spacing.xs }}>
-                      <Text style={styles.purchaseTitle}>{p.coinName}</Text>
-                      <Text style={styles.purchaseSub}>
-                        Qty {p.quantity} • {formatCurrency(p.totalPaid, "ZAR")} •{" "}
-                        {ymd(p.purchasedAt)}
-                      </Text>
-                    </View>
+              <View style={{ marginTop: spacing.lg }}>
+                {purchaseSections.map((section) => (
+                  <View key={section.key} style={{ marginBottom: spacing.lg }}>
+                    <Text style={styles.timelineHeader}>{section.title}</Text>
 
-                    <Ionicons
-                      name="chevron-forward"
-                      size={18}
-                      color={colors.ink}
-                      style={{ opacity: 0.45 }}
-                    />
-                  </Pressable>
+                    <View style={{ marginTop: spacing.md }}>
+                      {section.items.map((p, idx) => (
+                        <TimelineRow
+                          key={p.id}
+                          item={p}
+                          isFirst={idx === 0}
+                          isLast={idx === section.items.length - 1}
+                          spotPerOzDisplay={spotDisplay}
+                          spotPerOzZar={spotZar}
+                          displayCurrency={currency}
+                          onPress={() =>
+                            router.push(`/stack/add?entryId=${encodeURIComponent(p.id)}`)
+                          }
+                        />
+                      ))}
+                    </View>
+                  </View>
                 ))}
 
                 {canLoadMore ? (
                   <Pressable
                     onPress={() => setVisibleCount((v) => v + PAGE_SIZE)}
-                    style={({ pressed }) => [
-                      styles.loadMoreBtn,
-                      pressed && { opacity: 0.9 },
-                    ]}
+                    style={({ pressed }) => [styles.loadMoreBtn, pressed && { opacity: 0.9 }]}
                   >
                     <Text style={styles.loadMoreText}>
-                      Load more (
-                      {Math.min(visibleCount + PAGE_SIZE, purchaseRows.length)}/
+                      Load more ({Math.min(visibleCount + PAGE_SIZE, purchaseRows.length)}/
                       {purchaseRows.length})
                     </Text>
                   </Pressable>
@@ -446,7 +657,6 @@ export default function HomeScreen() {
         >
           <Text style={styles.ctaText}>＋ Stack</Text>
         </Pressable>
-
       </ScrollView>
     </SafeAreaView>
   );
@@ -456,7 +666,6 @@ export default function HomeScreen() {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.surface },
-
   container: { padding: spacing.lg, paddingBottom: spacing.xl + spacing.md },
 
   hero: { marginBottom: spacing.md },
@@ -468,7 +677,6 @@ const styles = StyleSheet.create({
   },
   appTitle: { ...text.titleM, color: colors.ink },
 
-  // ✅ new hero level row
   levelRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -490,6 +698,15 @@ const styles = StyleSheet.create({
   levelHint: { ...text.hint, color: colors.inkMuted },
 
   heroValue: { ...text.titleXL, color: colors.ink },
+
+  heroPnlRow: {
+    marginTop: 6,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  heroPnlText: { ...text.body, fontSize: 13, fontWeight: "800" },
+
   heroSub: { ...text.body, color: colors.inkMuted, marginTop: spacing.sm },
 
   errorPill: {
@@ -549,18 +766,70 @@ const styles = StyleSheet.create({
   },
   toggleText: { ...text.titleM, fontSize: 14, color: colors.ink },
 
-  purchaseRow: {
+  /* -------- timeline -------- */
+
+  timelineHeader: {
+    ...text.label,
+    color: colors.inkSoft,
+    opacity: 0.9,
+    marginTop: spacing.sm,
+  },
+
+  timelineRow: {
     flexDirection: "row",
-    alignItems: "center",
     gap: spacing.md,
+    alignItems: "stretch",
+    paddingVertical: spacing.sm,
+  },
+
+  rail: {
+    width: 18,
+    alignItems: "center",
+  },
+  dot: {
+    width: 8,
+    height: 8,
+    borderRadius: 999,
+    backgroundColor: "rgba(0,0,0,0.35)",
+  },
+  line: {
+    flex: 1,
+    width: 2,
+    backgroundColor: "rgba(0,0,0,0.12)",
+  },
+  lineSpacer: { flex: 1 },
+
+  timelineCard: {
+    flex: 1,
     padding: spacing.lg,
     borderRadius: radius.md,
     backgroundColor: colors.surfaceLift,
     borderWidth: 1,
     borderColor: "rgba(0,0,0,0.06)",
+    gap: spacing.xs,
   },
+  timelineTop: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.md,
+  },
+
   purchaseTitle: { ...text.titleM, fontSize: 14, color: colors.ink },
   purchaseSub: { ...text.body, fontSize: 12, color: colors.inkMuted },
+
+  pnlRow: {
+    marginTop: 4,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  pnlText: { ...text.body, fontSize: 12, fontWeight: "900" },
+
+  // ✅ “appropriate” colors
+  pnlUp: { color: "#008C46" },
+  pnlDown: { color: "#C83232" },
+  pnlFlat: { color: "rgba(0,0,0,0.55)" },
 
   loadMoreBtn: {
     paddingVertical: spacing.lg,

@@ -1,6 +1,6 @@
 // src/services/spot.ts
 
-export type SpotCurrency = "ZAR" | "USD";
+export type SpotCurrency = "USD" | "ZAR" | "EUR" | "GBP";
 
 export async function fetchSilverPerOz(
   to: SpotCurrency
@@ -9,6 +9,8 @@ export async function fetchSilverPerOz(
   fetchedAt: number;
   source: string;
 }> {
+  // exchangerate.host may or may not require a key depending on plan;
+  // you already have this wired, so keep it.
   const accessKey = process.env.EXPO_PUBLIC_EXCHANGERATE_KEY;
 
   if (!accessKey) {
@@ -36,7 +38,7 @@ export async function fetchSilverPerOz(
 
   const result = Number(data.result);
   if (!Number.isFinite(result) || result <= 0) {
-    throw new Error(`Invalid spot result for ${to}: ${String(data.result)}`);
+    throw new Error(`Invalid spot result for ${to}: ${String(data?.result)}`);
   }
 
   return {
