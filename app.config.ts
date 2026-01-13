@@ -1,0 +1,56 @@
+// app.config.ts
+import "dotenv/config";
+
+export default ({ config }: { config: any }) => {
+  return {
+    ...config,
+
+    // keep everything you already had in app.json
+    name: "stackd",
+    slug: "stackd",
+    scheme: "stackd",
+    version: "1.0.0",
+    orientation: "portrait",
+    icon: "./assets/icon.png",
+    userInterfaceStyle: "light",
+    newArchEnabled: true,
+
+    splash: {
+      image: "./assets/splash-icon.png",
+      resizeMode: "contain",
+      backgroundColor: "#ffffff",
+    },
+
+    ios: {
+      supportsTablet: true,
+      bundleIdentifier: "com.adickr.stackd",
+    },
+
+    android: {
+      adaptiveIcon: {
+        foregroundImage: "./assets/ic_launcher_foreground.png",
+        backgroundColor: "#ffffff",
+      },
+      edgeToEdgeEnabled: true,
+      predictiveBackGestureEnabled: false,
+      package: "com.adickr.stackd",
+    },
+
+    web: {
+      favicon: "./assets/favicon.png",
+    },
+
+    plugins: ["expo-router", "@react-native-community/datetimepicker"],
+
+    extra: {
+      ...(config.extra ?? {}),
+      router: {},
+      eas: {
+        projectId: "042bfee5-aa91-4cc9-b5ff-1f525e49b7fb",
+      },
+
+      // ✅ this is the important part
+      EXPO_PUBLIC_RELAY_URL: process.env.EXPO_PUBLIC_RELAY_URL ?? "",
+    },
+  };
+};
