@@ -24,7 +24,7 @@ type SpotState = {
   silverZarPerOz: number;
   silverUsdPerOz: number;
 
-  // generalized map: currency -> perOz
+  // generalized map: currency -> perOz (MUST be numbers only)
   silverPerOzByCurrency: Record<string, number>;
 
   fetchedAt: number | null;
@@ -69,6 +69,47 @@ function normalizeError(err: unknown) {
   }
 }
 
+/**
+ * 🛡️ Ensure persisted or incoming maps only contain finite positive numbers.
+ * This prevents the exact TS/runtime issue you hit (objects ending up in the map).
+ */
+function sanitizePerOzMap(input: unknown): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (!input || typeof input !== "object") return out;
+
+  for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
+    const n = typeof v === "number" ? v : Number(v);
+    if (Number.isFinite(n) && n > 0) out[k] = n;
+  }
+  return out;
+}
+
+function sanitizeHistory(input: unknown): SpotHistoryPoint[] {
+  if (!Array.isArray(input)) return [];
+
+  const out: SpotHistoryPoint[] = [];
+  for (const raw of input) {
+    const t = Number((raw as any)?.t ?? 0);
+    const usdPerOz = Number((raw as any)?.usdPerOz ?? 0);
+    const zarPerOz = Number((raw as any)?.zarPerOz ?? 0);
+    const by = sanitizePerOzMap((raw as any)?.by);
+
+    if (!Number.isFinite(t) || t <= 0) continue;
+
+    out.push({
+      t,
+      usdPerOz: Number.isFinite(usdPerOz) && usdPerOz > 0 ? usdPerOz : 0,
+      zarPerOz: Number.isFinite(zarPerOz) && zarPerOz > 0 ? zarPerOz : 0,
+      by: Object.keys(by).length ? by : undefined,
+    });
+  }
+
+  // Ensure sorted and capped
+  out.sort((a, b) => a.t - b.t);
+  const MAX = 365;
+  return out.length > MAX ? out.slice(out.length - MAX) : out;
+}
+
 export const useSpotStore = create<SpotState>()(
   persist(
     (set, get) => ({
@@ -99,35 +140,39 @@ export const useSpotStore = create<SpotState>()(
           let fetchedAt = 0;
 
           for (const r of results) {
-            map[r.c] = r.perOz;
-            fetchedAt = Math.max(fetchedAt, r.fetchedAt);
+            // defensive: only store good numbers
+            if (Number.isFinite(r.perOz) && r.perOz > 0) {
+              map[r.c] = r.perOz;
+            }
+            fetchedAt = Math.max(fetchedAt, r.fetchedAt || 0);
           }
 
-          const now = Date.now();
-          const today = dayStart(now);
+          const today = dayStart(Date.now());
 
           // Keep old fields populated for existing UI
           const usd = map["USD"] ?? get().silverUsdPerOz;
           const zar = map["ZAR"] ?? get().silverZarPerOz;
 
-          set((state) => ({
-            ...state,
-            silverUsdPerOz: usd,
-            silverZarPerOz: zar,
-            silverPerOzByCurrency: {
-              ...state.silverPerOzByCurrency,
-              ...map,
-            },
-            fetchedAt: fetchedAt || state.fetchedAt,
-            isLoading: false,
-            error: null,
-            history: upsertDailyPoint(state.history, {
-              t: today,
-              usdPerOz: usd,
-              zarPerOz: zar,
-              by: map, // includes EUR/GBP too now
-            }),
-          }));
+          set((state) => {
+            const prevClean = sanitizePerOzMap(state.silverPerOzByCurrency);
+            const nextMap = { ...prevClean, ...map };
+
+            return {
+              ...state,
+              silverUsdPerOz: usd,
+              silverZarPerOz: zar,
+              silverPerOzByCurrency: nextMap,
+              fetchedAt: fetchedAt || state.fetchedAt,
+              isLoading: false,
+              error: null,
+              history: upsertDailyPoint(state.history, {
+                t: today,
+                usdPerOz: usd,
+                zarPerOz: zar,
+                by: map,
+              }),
+            };
+          });
         } catch (err) {
           set({ isLoading: false, error: normalizeError(err) });
           console.warn("refreshSpot failed:", err);
@@ -137,6 +182,26 @@ export const useSpotStore = create<SpotState>()(
     {
       name: "spot-store",
       storage: createJSONStorage(() => AsyncStorage),
+      version: 2,
+      migrate: (persisted: any) => {
+        // sanitize any old/bad persisted values
+        const silverPerOzByCurrency = sanitizePerOzMap(
+          persisted?.silverPerOzByCurrency
+        );
+        const history = sanitizeHistory(persisted?.history);
+
+        const silverUsdPerOz = Number(persisted?.silverUsdPerOz ?? 0);
+        const silverZarPerOz = Number(persisted?.silverZarPerOz ?? 0);
+        const fetchedAt = persisted?.fetchedAt ?? null;
+
+        return {
+          silverUsdPerOz: Number.isFinite(silverUsdPerOz) ? silverUsdPerOz : 0,
+          silverZarPerOz: Number.isFinite(silverZarPerOz) ? silverZarPerOz : 0,
+          silverPerOzByCurrency,
+          fetchedAt: typeof fetchedAt === "number" ? fetchedAt : null,
+          history,
+        };
+      },
       partialize: (s) => ({
         silverZarPerOz: s.silverZarPerOz,
         silverUsdPerOz: s.silverUsdPerOz,

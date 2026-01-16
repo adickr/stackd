@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+// app/stack/add.tsx
+import React, { useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -10,6 +11,7 @@ import {
   Keyboard,
   KeyboardAvoidingView,
   ScrollView,
+  Modal,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -17,6 +19,8 @@ import DateTimePicker from "@react-native-community/datetimepicker";
 
 import { useCoinStore } from "../../src/stores/coinStore";
 import { useStackStore } from "../../src/stores/stackStore";
+import { useSettingsStore } from "../../src/stores/settingsStore";
+import type { DisplayCurrency } from "../../src/stores/settingsStore";
 
 function parseNumber(input: string) {
   const normalized = input.trim().replace(",", ".");
@@ -26,6 +30,13 @@ function parseNumber(input: string) {
 
 function ymdFromDate(d: Date) {
   return d.toISOString().slice(0, 10);
+}
+
+// ✅ Keep this in sync with settingsStore DisplayCurrency
+const CURRENCIES: DisplayCurrency[] = ["USD", "ZAR", "EUR", "GBP"];
+
+function asDisplayCurrency(x: any, fallback: DisplayCurrency): DisplayCurrency {
+  return CURRENCIES.includes(x) ? (x as DisplayCurrency) : fallback;
 }
 
 export default function AddStackEntry() {
@@ -40,12 +51,20 @@ export default function AddStackEntry() {
   const updateEntry = useStackStore((s) => s.updateEntry);
   const removeEntry = useStackStore((s) => s.removeEntry);
 
+  const settingsCurrency = useSettingsStore((s) => s.currency);
+
   const entryId = params.entryId ? String(params.entryId) : undefined;
   const existing = useMemo(() => getEntry(entryId), [entryId, getEntry]);
 
   const [coinTypeId, setCoinTypeId] = useState<string | undefined>();
   const [qty, setQty] = useState("1");
   const [paid, setPaid] = useState("");
+
+  // ✅ Paid currency is DisplayCurrency (same union as settings)
+  const [paidCurrency, setPaidCurrency] = useState<DisplayCurrency>(
+    asDisplayCurrency(settingsCurrency, "USD")
+  );
+  const [currencyPickerOpen, setCurrencyPickerOpen] = useState(false);
 
   const [pickedDate, setPickedDate] = useState<Date>(new Date());
   const [showPicker, setShowPicker] = useState(false);
@@ -62,7 +81,16 @@ export default function AddStackEntry() {
     setQty(String(existing.quantity));
     setPaid(String(existing.totalPaid));
     setPickedDate(new Date(existing.purchasedAt));
+
+    // ✅ If older entries don't have paidCurrency yet, assume ZAR
+    setPaidCurrency(asDisplayCurrency((existing as any).paidCurrency, "ZAR"));
   }, [existing]);
+
+  // For brand new entries, default paid currency to current settings
+  useEffect(() => {
+    if (existing) return; // don't override edit mode
+    setPaidCurrency(asDisplayCurrency(settingsCurrency, "USD"));
+  }, [settingsCurrency, existing]);
 
   // When returning from coin picker (applies to add OR edit)
   useEffect(() => {
@@ -100,6 +128,7 @@ export default function AddStackEntry() {
         coinTypeId,
         quantity: qtyNum,
         totalPaid: paidNum,
+        paidCurrency,
         purchasedAt,
       });
     } else {
@@ -107,6 +136,7 @@ export default function AddStackEntry() {
         coinTypeId,
         quantity: qtyNum,
         totalPaid: paidNum,
+        paidCurrency,
         purchasedAt,
       });
     }
@@ -132,9 +162,17 @@ export default function AddStackEntry() {
   };
 
   const title = entryId ? "Edit purchase" : "Stack";
-  const subtitle = entryId
-    ? "Update a purchase in your stack."
-    : "Add a purchase to your stack.";
+  const subtitle = entryId ? "Update a purchase in your stack." : "Add a purchase to your stack.";
+
+  // Nice placeholder per currency (tiny UX win)
+  const paidPlaceholder =
+    paidCurrency === "USD"
+      ? "e.g. 120"
+      : paidCurrency === "EUR"
+      ? "e.g. 110"
+      : paidCurrency === "GBP"
+      ? "e.g. 95"
+      : "e.g. 450";
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
@@ -152,14 +190,11 @@ export default function AddStackEntry() {
           }}
           accessible={false}
         >
-          <ScrollView
-            contentContainerStyle={styles.container}
-            keyboardShouldPersistTaps="handled"
-          >
+          <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
             <Text style={styles.title}>{title}</Text>
             <Text style={styles.subtitle}>{subtitle}</Text>
 
-            {/* More prominent secondary back */}
+            {/* Back */}
             <Pressable
               onPress={() => {
                 Keyboard.dismiss();
@@ -200,10 +235,27 @@ export default function AddStackEntry() {
               returnKeyType="done"
             />
 
+            {/* Paid currency picker */}
+            <Text style={styles.label}>Paid currency</Text>
+            <Pressable
+              onPress={() => {
+                Keyboard.dismiss();
+                setCurrencyPickerOpen(true);
+              }}
+              style={({ pressed }) => [
+                styles.input,
+                styles.pickerInput,
+                pressed && { opacity: 0.9 },
+              ]}
+            >
+              <Text style={styles.valueText}>{paidCurrency}</Text>
+              <Text style={styles.chevron}>▾</Text>
+            </Pressable>
+
             {/* Paid */}
-            <Text style={styles.label}>Total paid (ZAR)</Text>
+            <Text style={styles.label}>Total paid ({paidCurrency})</Text>
             <TextInput
-              placeholder="e.g. 450"
+              placeholder={paidPlaceholder}
               placeholderTextColor="#777"
               keyboardType="numeric"
               value={paid}
@@ -218,7 +270,7 @@ export default function AddStackEntry() {
 
               <Pressable
                 onPress={() => {
-                  Keyboard.dismiss(); // ✅ close keypad
+                  Keyboard.dismiss();
                   setShowPicker(true);
                 }}
                 style={({ pressed }) => [styles.input, pressed && { opacity: 0.9 }]}
@@ -272,6 +324,50 @@ export default function AddStackEntry() {
             ) : null}
           </ScrollView>
         </Pressable>
+
+        {/* Currency picker modal */}
+        <Modal
+          visible={currencyPickerOpen}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setCurrencyPickerOpen(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalCard}>
+              <Text style={styles.modalTitle}>Choose currency</Text>
+
+              {CURRENCIES.map((c) => {
+                const active = c === paidCurrency;
+                return (
+                  <Pressable
+                    key={c}
+                    onPress={() => {
+                      setPaidCurrency(c);
+                      setCurrencyPickerOpen(false);
+                    }}
+                    style={({ pressed }) => [
+                      styles.modalRow,
+                      active && styles.modalRowActive,
+                      pressed && { opacity: 0.9 },
+                    ]}
+                  >
+                    <Text style={[styles.modalRowText, active && { opacity: 0.95 }]}>
+                      {c}
+                      {active ? " ✓" : ""}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+
+              <Pressable
+                onPress={() => setCurrencyPickerOpen(false)}
+                style={({ pressed }) => [styles.modalCancel, pressed && { opacity: 0.9 }]}
+              >
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </Pressable>
+            </View>
+          </View>
+        </Modal>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -328,6 +424,13 @@ const styles = StyleSheet.create({
     color: "#111",
   },
 
+  pickerInput: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  chevron: { fontSize: 16, opacity: 0.5, fontWeight: "800" },
+
   dateBlock: { gap: 10, marginTop: 6 },
 
   primaryBtn: {
@@ -358,4 +461,38 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   deleteText: { color: "#b00020", fontWeight: "900" },
+
+  // Modal
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.35)",
+    padding: 16,
+    justifyContent: "center",
+  },
+  modalCard: {
+    borderRadius: 18,
+    backgroundColor: "#fff",
+    padding: 16,
+  },
+  modalTitle: { fontSize: 16, fontWeight: "900", opacity: 0.9 },
+
+  modalRow: {
+    marginTop: 10,
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    backgroundColor: "rgba(0,0,0,0.06)",
+  },
+  modalRowActive: { backgroundColor: "rgba(0,0,0,0.12)" },
+  modalRowText: { fontSize: 14, fontWeight: "900", opacity: 0.8 },
+
+  modalCancel: {
+    marginTop: 12,
+    borderRadius: 14,
+    paddingVertical: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.08)",
+  },
+  modalCancelText: { fontSize: 14, fontWeight: "900", opacity: 0.85 },
 });

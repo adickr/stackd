@@ -2,10 +2,11 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { StackEntry } from "../domain/stackEntry";
 
-const uid = () =>
-  Math.random().toString(36).slice(2) + "-" + Date.now().toString(36);
+import { StackEntry } from "../domain/stackEntry";
+import type { DisplayCurrency } from "./settingsStore";
+
+const uid = () => Math.random().toString(36).slice(2) + "-" + Date.now().toString(36);
 
 type ReplaceReport = {
   applied: number;
@@ -23,29 +24,34 @@ type SafeReplaceOptions = {
 
 type StackState = {
   entries: StackEntry[];
+
   addEntry: (entry: Omit<StackEntry, "id" | "createdAt">) => void;
   getEntry: (id?: string) => StackEntry | undefined;
   removeEntry: (id: string) => void;
+
   updateEntry: (
     id: string,
     patch: Partial<
-      Pick<StackEntry, "coinTypeId" | "quantity" | "totalPaid" | "purchasedAt">
+      Pick<StackEntry, "coinTypeId" | "quantity" | "totalPaid" | "paidCurrency" | "purchasedAt">
     >
   ) => void;
+
   clearAll: () => void;
 
   replaceAll: (entries: StackEntry[]) => void;
 
-  // ✅ NEW
   safeReplaceAll: (entries: unknown, opts?: SafeReplaceOptions) => ReplaceReport;
 };
 
 function coerceEntries(persisted: any): StackEntry[] {
   if (Array.isArray(persisted)) return persisted as StackEntry[];
   if (Array.isArray(persisted?.entries)) return persisted.entries as StackEntry[];
-  if (Array.isArray(persisted?.state?.entries))
-    return persisted.state.entries as StackEntry[];
+  if (Array.isArray(persisted?.state?.entries)) return persisted.state.entries as StackEntry[];
   return [];
+}
+
+function isDisplayCurrency(x: any): x is DisplayCurrency {
+  return x === "USD" || x === "ZAR" || x === "EUR" || x === "GBP";
 }
 
 function normalizeEntry(raw: any): StackEntry {
@@ -57,6 +63,11 @@ function normalizeEntry(raw: any): StackEntry {
   const id = String(raw?.id ?? uid());
   const createdAt = Number.isFinite(raw?.createdAt) ? Number(raw.createdAt) : Date.now();
 
+  // ✅ paidCurrency (default ZAR for old backups)
+  const paidCurrency: DisplayCurrency = isDisplayCurrency(raw?.paidCurrency)
+    ? raw.paidCurrency
+    : "ZAR";
+
   if (!coinTypeId) throw new Error("coinTypeId missing");
   if (!Number.isFinite(quantity) || quantity <= 0) throw new Error("quantity invalid");
   if (!Number.isFinite(totalPaid) || totalPaid < 0) throw new Error("totalPaid invalid");
@@ -67,6 +78,7 @@ function normalizeEntry(raw: any): StackEntry {
     coinTypeId,
     quantity,
     totalPaid,
+    paidCurrency,
     purchasedAt,
     createdAt,
     notes: typeof raw?.notes === "string" ? raw.notes : undefined,
@@ -139,28 +151,41 @@ export const useStackStore = create<StackState>()(
       clearAll: () => set({ entries: [] }),
 
       replaceAll: (entriesFromBackup) => {
+        // keep old behavior, but you might prefer safeReplaceAll for untrusted backups
         const safe = Array.isArray(entriesFromBackup) ? entriesFromBackup : [];
         set({ entries: safe });
       },
 
-      // ✅ NEW
       safeReplaceAll: (incoming, opts) => {
         const { entries, report } = safeNormalizeEntries(incoming, opts);
-
-        // overwrite with normalized
         set({ entries });
-
         return report;
       },
     }),
     {
       name: "stackd:stack",
       storage: createJSONStorage(() => AsyncStorage),
-      version: 3, // bumped
+      version: 4,
 
-      migrate: (persistedState: any) => {
+      migrate: (persistedState: any, version) => {
         const entries = coerceEntries(persistedState);
-        return { entries };
+
+        // v<4 -> v4: ensure paidCurrency exists and is valid
+        if (version < 4) {
+          const upgraded = entries.map((e: any) => ({
+            ...e,
+            paidCurrency: isDisplayCurrency(e?.paidCurrency) ? e.paidCurrency : "ZAR",
+          }));
+          return { entries: upgraded };
+        }
+
+        // Even on v4+, normalize defensive (handles odd persisted shapes)
+        const normalized = entries.map((e: any) => ({
+          ...e,
+          paidCurrency: isDisplayCurrency(e?.paidCurrency) ? e.paidCurrency : "ZAR",
+        }));
+
+        return { entries: normalized };
       },
 
       partialize: (state) => ({ entries: state.entries }),

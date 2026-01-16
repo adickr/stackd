@@ -1,9 +1,14 @@
+// src/domain/stackEntry.ts
+
+export type PaidCurrency = "USD" | "ZAR" | "EUR" | "GBP";
+
 export type StackEntry = {
   id: string;
   coinTypeId: string;
   quantity: number;
-  totalPaid: number;     // ZAR
-  purchasedAt: number;   // timestamp
-  createdAt: number;     // timestamp
+  totalPaid: number;
+  paidCurrency: PaidCurrency;
+  purchasedAt: number;
+  createdAt: number;
   notes?: string;
 };

@@ -16,10 +16,13 @@ import { useStackStore } from "../src/stores/stackStore";
 import { useCoinStore } from "../src/stores/coinStore";
 import { useSpotStore } from "../src/stores/spotStore";
 import { useSettingsStore } from "../src/stores/settingsStore";
+import type { DisplayCurrency } from "../src/stores/settingsStore";
 
 import { MyStackConviction } from "../src/components/MyStackConviction";
 
-// tokens
+// shared money helpers (Option B)
+import { formatMoney, formatSpot } from "../src/utils/money";
+
 import { colors, spacing, radius, text } from "../src/theme/tokens";
 
 const TROY_OZ_GRAMS = 31.1035;
@@ -59,38 +62,6 @@ function getNextLevel(totalOz: number) {
 
 /* ---------------- helpers ---------------- */
 
-function localeForCurrency(c: string) {
-  switch (c) {
-    case "ZAR":
-      return "en-ZA";
-    case "EUR":
-      return "en-IE";
-    case "GBP":
-      return "en-GB";
-    case "USD":
-    default:
-      return "en-US";
-  }
-}
-
-function formatMoney(value: number, currency: string, maxFractionDigits = 0) {
-  const safe = Number.isFinite(value) ? value : 0;
-  try {
-    return new Intl.NumberFormat(localeForCurrency(currency), {
-      style: "currency",
-      currency,
-      maximumFractionDigits: maxFractionDigits,
-    }).format(safe);
-  } catch {
-    return `${currency} ${Math.round(safe).toLocaleString()}`;
-  }
-}
-
-function formatSpot(value: number, currency: string) {
-  if (!Number.isFinite(value) || value <= 0) return "—";
-  return formatMoney(value, currency, 2);
-}
-
 function formatWeight(oz: number, unit: "oz" | "g") {
   if (unit === "g") {
     const g = oz * TROY_OZ_GRAMS;
@@ -114,8 +85,8 @@ function monthTitle(ms: number) {
 
 type PnlMeta = {
   ok: boolean;
-  pct: number; // e.g. 12.3 for +12.3%
-  amount: number; // in display currency
+  pct: number;
+  amount: number;
   kind: "up" | "down" | "flat";
 };
 
@@ -127,8 +98,7 @@ function computePnl(paidDisplay: number, currentValue: number): PnlMeta {
   const pct = (amount / paidDisplay) * 100;
 
   const eps = 0.001;
-  const kind: PnlMeta["kind"] =
-    amount > eps ? "up" : amount < -eps ? "down" : "flat";
+  const kind: PnlMeta["kind"] = amount > eps ? "up" : amount < -eps ? "down" : "flat";
 
   return { ok: true, pct, amount, kind };
 }
@@ -146,7 +116,8 @@ type TimelineRowItem = {
   id: string;
   coinName: string;
   quantity: number;
-  totalPaid: number; // ZAR today
+  totalPaid: number;
+  paidCurrency: DisplayCurrency;
   purchasedAt: number;
   fineOz: number;
 };
@@ -157,13 +128,26 @@ type TimelineSection = {
   items: TimelineRowItem[];
 };
 
+// FX helper using implied rate from silver spot
+function impliedFx(
+  from: DisplayCurrency,
+  to: DisplayCurrency,
+  perOzByCurrency: Record<string, number>
+) {
+  if (from === to) return 1;
+  const fromPerOz = perOzByCurrency?.[from] ?? 0;
+  const toPerOz = perOzByCurrency?.[to] ?? 0;
+  if (fromPerOz > 0 && toPerOz > 0) return toPerOz / fromPerOz; // (to per oz) / (from per oz)
+  return 0;
+}
+
 function TimelineRow({
   item,
   isFirst,
   isLast,
   onPress,
   spotPerOzDisplay,
-  spotPerOzZar,
+  perOzByCurrency,
   displayCurrency,
 }: {
   item: TimelineRowItem;
@@ -171,26 +155,18 @@ function TimelineRow({
   isLast: boolean;
   onPress: () => void;
   spotPerOzDisplay: number;
-  spotPerOzZar: number;
-  displayCurrency: string;
+  perOzByCurrency: Record<string, number>;
+  displayCurrency: DisplayCurrency;
 }) {
   const fineOz = Number.isFinite(item.fineOz) ? item.fineOz : 0;
 
   const currentValue =
     spotPerOzDisplay > 0 && fineOz > 0 ? fineOz * spotPerOzDisplay : 0;
 
-  // Convert paid ZAR -> display currency using current implied FX from spot
-  const fxZarToDisplay =
-    displayCurrency === "ZAR"
-      ? 1
-      : spotPerOzDisplay > 0 && spotPerOzZar > 0
-      ? spotPerOzDisplay / spotPerOzZar
-      : 0;
-
+  // Convert paidCurrency -> displayCurrency using implied FX from spot map
+  const fx = impliedFx(item.paidCurrency, displayCurrency, perOzByCurrency);
   const paidDisplay =
-    fxZarToDisplay > 0 && Number.isFinite(item.totalPaid)
-      ? item.totalPaid * fxZarToDisplay
-      : 0;
+    fx > 0 && Number.isFinite(item.totalPaid) ? item.totalPaid * fx : 0;
 
   const pnl = computePnl(paidDisplay, currentValue);
 
@@ -200,19 +176,26 @@ function TimelineRow({
   const pnlIcon =
     pnl.kind === "up" ? "arrow-up" : pnl.kind === "down" ? "arrow-down" : "remove";
 
+  const iconColor =
+    pnl.ok
+      ? pnl.kind === "up"
+        ? "#008C46"
+        : pnl.kind === "down"
+          ? "#C83232"
+          : "#666"
+      : "#666";
+
   return (
     <Pressable
       onPress={onPress}
       style={({ pressed }) => [styles.timelineRow, pressed && { opacity: 0.9 }]}
     >
-      {/* Rail */}
       <View style={styles.rail}>
         {!isFirst ? <View style={styles.line} /> : <View style={styles.lineSpacer} />}
         <View style={styles.dot} />
         {!isLast ? <View style={styles.line} /> : <View style={styles.lineSpacer} />}
       </View>
 
-      {/* Card */}
       <View style={styles.timelineCard}>
         <View style={styles.timelineTop}>
           <Text style={styles.purchaseTitle}>{item.coinName}</Text>
@@ -229,7 +212,8 @@ function TimelineRow({
         </Text>
 
         <Text style={styles.purchaseSub}>
-          Paid: {formatMoney(item.totalPaid, "ZAR", 0)}{"  "}• Current:{" "}
+          Paid: {formatMoney(item.totalPaid, item.paidCurrency, 0)}
+          {"  "}• Current:{" "}
           {spotPerOzDisplay > 0 ? formatMoney(currentValue, displayCurrency, 0) : "—"}
         </Text>
 
@@ -237,7 +221,7 @@ function TimelineRow({
           <Ionicons
             name={pnl.ok ? (pnlIcon as any) : "remove"}
             size={14}
-            color={pnl.ok ? (pnl.kind === "up" ? "#008C46" : pnl.kind === "down" ? "#C83232" : "#666") : "#666"}
+            color={iconColor}
             style={{ opacity: 0.95 }}
           />
           <Text style={[styles.pnlText, pnl.ok ? pnlColor : styles.pnlFlat]}>
@@ -271,38 +255,31 @@ export default function HomeScreen() {
   const spotError = useSpotStore((s) => s.error);
   const clearSpotError = useSpotStore((s) => s.clearError);
 
-  // generalized map for EUR/GBP etc
-  const perOzByCurrency = useSpotStore((s) => s.silverPerOzByCurrency);
+  // works with your updated store
+  const perOzByCurrency = useSpotStore((s) => s.silverPerOzByCurrency ?? {});
   const fallbackZar = useSpotStore((s) => s.silverZarPerOz);
   const fallbackUsd = useSpotStore((s) => s.silverUsdPerOz);
 
-  // UI state
   const [showPurchases, setShowPurchases] = useState(false);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
-
-  // My Stack UI: top-N + expand
   const [showAllStack, setShowAllStack] = useState(false);
 
   useEffect(() => {
     seedIfEmpty();
   }, [seedIfEmpty]);
 
-  // Fetch spot once on first load
   useEffect(() => {
     if (!fetchedAt) refreshSpot();
   }, [fetchedAt, refreshSpot]);
 
-  // Reset purchase pagination when collapsing
   useEffect(() => {
     if (!showPurchases) setVisibleCount(PAGE_SIZE);
   }, [showPurchases]);
 
-  // Keep pagination sane when entries change
   useEffect(() => {
     setVisibleCount((v) => Math.min(Math.max(PAGE_SIZE, v), entries.length || PAGE_SIZE));
   }, [entries.length]);
 
-  // If stack shrinks, keep "show all" from feeling weird
   useEffect(() => {
     if (showAllStack && entries.length === 0) setShowAllStack(false);
   }, [showAllStack, entries.length]);
@@ -310,7 +287,7 @@ export default function HomeScreen() {
   const fineOzByCoinId = useMemo(() => {
     const map: Record<string, number> = {};
     for (const c of coins) {
-      map[c.id] = (c.fineWeightGrams ?? 0) / TROY_OZ_GRAMS; // fine oz per unit
+      map[c.id] = (c.fineWeightGrams ?? 0) / TROY_OZ_GRAMS;
     }
     return map;
   }, [coins]);
@@ -326,56 +303,40 @@ export default function HomeScreen() {
     const fromMap = perOzByCurrency?.[currency];
     if (typeof fromMap === "number" && fromMap > 0) return fromMap;
 
-    // fallback for older persisted store / before first refresh
+    // fallback if store hasn't refreshed yet
     if (currency === "ZAR") return fallbackZar;
     if (currency === "USD") return fallbackUsd;
     return 0;
   }, [perOzByCurrency, currency, fallbackZar, fallbackUsd]);
 
-  const spotZar = useMemo(() => {
-    const fromMap = perOzByCurrency?.["ZAR"];
-    if (typeof fromMap === "number" && fromMap > 0) return fromMap;
-    return fallbackZar;
-  }, [perOzByCurrency, fallbackZar]);
-
   const portfolioValue = spotDisplay > 0 ? totalOz * spotDisplay : 0;
 
-  // Portfolio "paid" total is ZAR (today), so convert to display currency with current implied FX
-  const totalPaidZar = useMemo(() => {
-    return entries.reduce((sum, e) => sum + (Number.isFinite(e.totalPaid) ? e.totalPaid : 0), 0);
-  }, [entries]);
-
-  const fxZarToDisplay = useMemo(() => {
-    if (currency === "ZAR") return 1;
-    if (spotDisplay > 0 && spotZar > 0) return spotDisplay / spotZar;
-    return 0;
-  }, [currency, spotDisplay, spotZar]);
-
+  // convert each entry's paid -> display using implied FX
   const totalPaidDisplay = useMemo(() => {
-    if (fxZarToDisplay <= 0) return 0;
-    return totalPaidZar * fxZarToDisplay;
-  }, [totalPaidZar, fxZarToDisplay]);
+    if (!entries.length) return 0;
+
+    let sum = 0;
+    for (const e of entries) {
+      const from = (e as any).paidCurrency ?? "ZAR";
+      const fx = impliedFx(from, currency, perOzByCurrency);
+      if (fx > 0 && Number.isFinite(e.totalPaid)) sum += e.totalPaid * fx;
+    }
+    return sum;
+  }, [entries, currency, perOzByCurrency]);
 
   const portfolioPnl = useMemo(() => {
     return computePnl(totalPaidDisplay, portfolioValue);
   }, [totalPaidDisplay, portfolioValue]);
 
   const portfolioPnlColor =
-    portfolioPnl.kind === "up"
-      ? styles.pnlUp
-      : portfolioPnl.kind === "down"
-      ? styles.pnlDown
-      : styles.pnlFlat;
+    portfolioPnl.kind === "up" ? styles.pnlUp : portfolioPnl.kind === "down" ? styles.pnlDown : styles.pnlFlat;
 
   const portfolioPnlIcon =
     portfolioPnl.kind === "up" ? "arrow-up" : portfolioPnl.kind === "down" ? "arrow-down" : "remove";
 
-  // Hero level chip
   const level = useMemo(() => getStackLevel(totalOz), [totalOz]);
   const nextLevel = useMemo(() => getNextLevel(totalOz), [totalOz]);
   const ozToNext = nextLevel ? Math.max(0, nextLevel.minOz - totalOz) : 0;
-
-  /* --------- My Stack (conviction bars) --------- */
 
   const allStackRows = useMemo(() => {
     const byId: Record<string, number> = {};
@@ -402,8 +363,6 @@ export default function HomeScreen() {
   const hiddenStackCount = Math.max(0, allStackRows.length - STACK_TOP_N);
   const canExpandStack = !showAllStack && hiddenStackCount > 0;
 
-  /* --------- Purchases list (timeline + paging) --------- */
-
   const purchaseRows = useMemo<TimelineRowItem[]>(() => {
     return entries
       .slice()
@@ -418,17 +377,17 @@ export default function HomeScreen() {
           coinName: coin?.name ?? "Unknown coin",
           quantity: e.quantity,
           totalPaid: e.totalPaid,
+          paidCurrency: (e as any).paidCurrency ?? "ZAR",
           purchasedAt: e.purchasedAt,
           fineOz,
         };
       });
   }, [entries, getCoin, fineOzByCoinId]);
 
-  // paging before grouping
   const visiblePurchaseRows = showPurchases ? purchaseRows.slice(0, visibleCount) : [];
   const canLoadMore = showPurchases && visibleCount < purchaseRows.length;
 
-  const purchaseSections = useMemo<TimelineSection[]>(() => {
+  const purchaseSections = useMemo(() => {
     if (!showPurchases) return [];
     const map = new Map<string, { ms: number; items: TimelineRowItem[] }>();
 
@@ -442,10 +401,8 @@ export default function HomeScreen() {
 
     return Array.from(map.entries())
       .map(([key, v]) => ({ key, title: monthTitle(v.ms), items: v.items }))
-      .sort((a, b) => (a.key < b.key ? 1 : -1)); // newest month first
+      .sort((a, b) => (a.key < b.key ? 1 : -1));
   }, [showPurchases, visiblePurchaseRows]);
-
-  /* ---------------- render ---------------- */
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
@@ -453,7 +410,6 @@ export default function HomeScreen() {
         contentContainerStyle={styles.container}
         refreshControl={<RefreshControl refreshing={isLoading} onRefresh={refreshSpot} />}
       >
-        {/* Hero */}
         <View style={styles.hero}>
           <View style={styles.heroHeader}>
             <Text style={styles.appTitle}>Stackd</Text>
@@ -467,7 +423,6 @@ export default function HomeScreen() {
             </Pressable>
           </View>
 
-          {/* Level chip */}
           <View style={styles.levelRow}>
             <View style={styles.levelChip}>
               <Ionicons
@@ -493,7 +448,6 @@ export default function HomeScreen() {
 
           <Text style={styles.heroValue}>{formatMoney(portfolioValue, currency, 0)}</Text>
 
-          {/* ✅ Portfolio PnL line */}
           <View style={styles.heroPnlRow}>
             <Ionicons
               name={portfolioPnl.ok ? (portfolioPnlIcon as any) : "remove"}
@@ -503,8 +457,8 @@ export default function HomeScreen() {
                   ? portfolioPnl.kind === "up"
                     ? "#008C46"
                     : portfolioPnl.kind === "down"
-                    ? "#C83232"
-                    : "#666"
+                      ? "#C83232"
+                      : "#666"
                   : "#666"
               }
               style={{ opacity: 0.95 }}
@@ -521,7 +475,6 @@ export default function HomeScreen() {
             {fetchedAt ? "updated" : "pull to refresh"}
           </Text>
 
-          {/* Spot error (non-blocking) */}
           {spotError ? (
             <View style={styles.errorPill}>
               <Text style={styles.errorText} numberOfLines={2}>
@@ -538,7 +491,6 @@ export default function HomeScreen() {
           ) : null}
         </View>
 
-        {/* My Stack */}
         <View style={styles.card}>
           <View style={styles.cardHeaderRow}>
             <Text style={styles.cardTitle}>My Stack</Text>
@@ -561,12 +513,7 @@ export default function HomeScreen() {
               style={({ pressed }) => [styles.expandBtn, pressed && { opacity: 0.9 }]}
             >
               <Text style={styles.expandText}>+ {hiddenStackCount} smaller positions</Text>
-              <Ionicons
-                name="chevron-down"
-                size={18}
-                color={colors.ink}
-                style={{ opacity: 0.55 }}
-              />
+              <Ionicons name="chevron-down" size={18} color={colors.ink} style={{ opacity: 0.55 }} />
             </Pressable>
           ) : null}
 
@@ -576,17 +523,11 @@ export default function HomeScreen() {
               style={({ pressed }) => [styles.expandBtn, pressed && { opacity: 0.9 }]}
             >
               <Text style={styles.expandText}>Show top only</Text>
-              <Ionicons
-                name="chevron-up"
-                size={18}
-                color={colors.ink}
-                style={{ opacity: 0.55 }}
-              />
+              <Ionicons name="chevron-up" size={18} color={colors.ink} style={{ opacity: 0.55 }} />
             </Pressable>
           ) : null}
         </View>
 
-        {/* Purchase history */}
         {purchaseRows.length > 0 ? (
           <View style={styles.card}>
             <View style={styles.cardHeaderRow}>
@@ -623,11 +564,9 @@ export default function HomeScreen() {
                           isFirst={idx === 0}
                           isLast={idx === section.items.length - 1}
                           spotPerOzDisplay={spotDisplay}
-                          spotPerOzZar={spotZar}
+                          perOzByCurrency={perOzByCurrency}
                           displayCurrency={currency}
-                          onPress={() =>
-                            router.push(`/stack/add?entryId=${encodeURIComponent(p.id)}`)
-                          }
+                          onPress={() => router.push(`/stack/add?entryId=${encodeURIComponent(p.id)}`)}
                         />
                       ))}
                     </View>
@@ -650,7 +589,6 @@ export default function HomeScreen() {
           </View>
         ) : null}
 
-        {/* CTA */}
         <Pressable
           onPress={() => router.push("/stack/add")}
           style={({ pressed }) => [styles.cta, pressed && { opacity: 0.9 }]}
@@ -661,8 +599,6 @@ export default function HomeScreen() {
     </SafeAreaView>
   );
 }
-
-/* ---------------- styles ---------------- */
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.surface },
@@ -766,8 +702,6 @@ const styles = StyleSheet.create({
   },
   toggleText: { ...text.titleM, fontSize: 14, color: colors.ink },
 
-  /* -------- timeline -------- */
-
   timelineHeader: {
     ...text.label,
     color: colors.inkSoft,
@@ -782,21 +716,14 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
   },
 
-  rail: {
-    width: 18,
-    alignItems: "center",
-  },
+  rail: { width: 18, alignItems: "center" },
   dot: {
     width: 8,
     height: 8,
     borderRadius: 999,
     backgroundColor: "rgba(0,0,0,0.35)",
   },
-  line: {
-    flex: 1,
-    width: 2,
-    backgroundColor: "rgba(0,0,0,0.12)",
-  },
+  line: { flex: 1, width: 2, backgroundColor: "rgba(0,0,0,0.12)" },
   lineSpacer: { flex: 1 },
 
   timelineCard: {
@@ -826,7 +753,6 @@ const styles = StyleSheet.create({
   },
   pnlText: { ...text.body, fontSize: 12, fontWeight: "900" },
 
-  // ✅ “appropriate” colors
   pnlUp: { color: "#008C46" },
   pnlDown: { color: "#C83232" },
   pnlFlat: { color: "rgba(0,0,0,0.55)" },

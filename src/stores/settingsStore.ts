@@ -4,8 +4,16 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 
 export type WeightUnit = "oz" | "g";
 
-// ✅ You can add more later
-export type DisplayCurrency = "USD" | "ZAR" | "EUR" | "GBP";
+/* ---------------------------------------------
+   ✅ Single source of truth for currencies
+---------------------------------------------- */
+
+export const SUPPORTED_CURRENCIES = ["USD", "ZAR", "EUR", "GBP"] as const;
+export type DisplayCurrency = typeof SUPPORTED_CURRENCIES[number];
+
+/* ---------------------------------------------
+   Store shape
+---------------------------------------------- */
 
 type SettingsState = {
   unit: WeightUnit;
@@ -21,23 +29,39 @@ type SettingsState = {
   setCurrency: (currency: DisplayCurrency) => void;
   toggleCurrency: () => void;
 
-  setCloudBackupState: (p: { hasCloudBackup: boolean; lastCloudBackupAt: number | null }) => void;
+  setCloudBackupState: (p: {
+    hasCloudBackup: boolean;
+    lastCloudBackupAt: number | null;
+  }) => void;
+
   clearCloudBackupState: () => void;
 };
+
+/* ---------------------------------------------
+   Defaults
+---------------------------------------------- */
 
 const DEFAULTS: Pick<
   SettingsState,
   "unit" | "currency" | "hasCloudBackup" | "lastCloudBackupAt"
 > = {
   unit: "oz",
-  currency: "USD", // ✅ default
+  currency: "USD",
   hasCloudBackup: false,
   lastCloudBackupAt: null,
 };
 
+/* ---------------------------------------------
+   Guards
+---------------------------------------------- */
+
 function isValidCurrency(x: any): x is DisplayCurrency {
-  return x === "USD" || x === "ZAR" || x === "EUR" || x === "GBP";
+  return SUPPORTED_CURRENCIES.includes(x);
 }
+
+/* ---------------------------------------------
+   Store
+---------------------------------------------- */
 
 export const useSettingsStore = create<SettingsState>()(
   persist(
@@ -45,11 +69,12 @@ export const useSettingsStore = create<SettingsState>()(
       ...DEFAULTS,
 
       setUnit: (unit) => set({ unit }),
-      toggleUnit: () => set({ unit: get().unit === "oz" ? "g" : "oz" }),
+      toggleUnit: () =>
+        set({ unit: get().unit === "oz" ? "g" : "oz" }),
 
       setCurrency: (currency) => set({ currency }),
 
-      // Keep toggle for quick dev/testing; it only flips USD/ZAR
+      // ⚠️ Dev convenience only (kept intentionally)
       toggleCurrency: () =>
         set({ currency: get().currency === "USD" ? "ZAR" : "USD" }),
 
@@ -62,36 +87,32 @@ export const useSettingsStore = create<SettingsState>()(
     {
       name: "stackd:settings",
       storage: createJSONStorage(() => AsyncStorage),
-      version: 4, // bump
+      version: 4,
+
       migrate: (persisted: any, version) => {
-        // v1 -> v2: cloud backup fields added
+        let next = { ...persisted };
+
+        // v1 → v2: add cloud backup fields
         if (version < 2) {
-          persisted = {
-            ...persisted,
-            hasCloudBackup: false,
-            lastCloudBackupAt: null,
-          };
+          next.hasCloudBackup = false;
+          next.lastCloudBackupAt = null;
         }
 
-        // v2 -> v3: USD default guard
+        // v2 → v3: ensure currency exists
         if (version < 3) {
-          const cur = persisted?.currency;
-          persisted = {
-            ...persisted,
-            currency: isValidCurrency(cur) ? cur : "USD",
-          };
+          next.currency = isValidCurrency(next.currency)
+            ? next.currency
+            : "USD";
         }
 
-        // v3 -> v4: validate currency again (now we allow EUR/GBP)
+        // v3 → v4: allow EUR / GBP
         if (version < 4) {
-          const cur = persisted?.currency;
-          persisted = {
-            ...persisted,
-            currency: isValidCurrency(cur) ? cur : "USD",
-          };
+          next.currency = isValidCurrency(next.currency)
+            ? next.currency
+            : "USD";
         }
 
-        return persisted;
+        return next;
       },
     }
   )
