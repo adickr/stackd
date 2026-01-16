@@ -105,6 +105,7 @@ export default function SettingsScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+
   const cloudStatusPill = useMemo(() => {
     if (checkingCloud) return { label: "Checking…", kind: "neutral" as const };
     if (!isConnected) return { label: "Wallet required", kind: "neutral" as const };
