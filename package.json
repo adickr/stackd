@@ -1,7 +1,11 @@
 {
   "name": "stackd",
   "version": "1.0.0",
+<<<<<<< HEAD
   "main": "expo-router/entry",
+=======
+  "main": "index.js",
+>>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
   "scripts": {
     "start": "expo start",
     "android": "expo run:android",
@@ -9,6 +13,7 @@
     "web": "expo start --web"
   },
   "dependencies": {
+<<<<<<< HEAD
     "@react-native-async-storage/async-storage": "2.2.0",
     "@react-native-community/datetimepicker": "8.4.4",
     "d3-scale": "^4.0.2",
@@ -16,14 +21,41 @@
     "expo": "~54.0.30",
     "expo-dev-client": "~6.0.20",
     "expo-router": "~6.0.21",
+=======
+    "@noble/hashes": "^2.0.1",
+    "@react-native-async-storage/async-storage": "2.2.0",
+    "@react-native-community/datetimepicker": "8.4.4",
+    "@solana-mobile/mobile-wallet-adapter-protocol": "^2.2.5",
+    "@solana-mobile/mobile-wallet-adapter-protocol-web3js": "^2.2.5",
+    "@solana/web3.js": "^1.98.4",
+    "bs58": "^6.0.0",
+    "buffer": "^6.0.3",
+    "d3-scale": "^4.0.2",
+    "d3-shape": "^3.2.0",
+    "expo": "~54.0.30",
+    "expo-crypto": "~15.0.8",
+    "expo-dev-client": "~6.0.20",
+    "expo-document-picker": "~14.0.8",
+    "expo-file-system": "~19.0.21",
+    "expo-router": "~6.0.21",
+    "expo-sharing": "~14.0.8",
+>>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
     "expo-status-bar": "~3.0.9",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "react-native": "0.81.5",
+<<<<<<< HEAD
+=======
+    "react-native-get-random-values": "^2.0.0",
+>>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
     "react-native-safe-area-context": "~5.6.0",
     "react-native-screens": "~4.16.0",
     "react-native-svg": "15.12.1",
     "react-test-renderer": "19.1.0",
+<<<<<<< HEAD
+=======
+    "tweetnacl": "^1.0.3",
+>>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
     "zustand": "^5.0.9"
   },
   "devDependencies": {

@@ -39,4 +39,12 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+<<<<<<< HEAD
 .env
+=======
+
+# Environment variables
+.env
+.env.*
+
+>>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))

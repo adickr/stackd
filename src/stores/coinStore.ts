@@ -4,6 +4,23 @@ import { persist, createJSONStorage } from "zustand/middleware";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { CoinType } from "../domain/coinType";
 
+<<<<<<< HEAD
+=======
+type ReplaceReport = {
+  applied: number;
+  dropped: number;
+  warnings: string[];
+};
+
+type SafeReplaceOptions = {
+  // default true
+  keepSeeds?: boolean;
+  // if true, preserves any local coins not present in incoming (by id)
+  // default false (full restore)
+  keepLocalExtras?: boolean;
+};
+
+>>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
 type CoinState = {
   coins: CoinType[];
   hasHydrated: boolean;
@@ -20,6 +37,15 @@ type CoinState = {
 
   searchCoins: (query: string) => CoinType[];
   clearAll: () => void;
+<<<<<<< HEAD
+=======
+
+  // existing (kept)
+  replaceAll: (coins: CoinType[]) => void;
+
+  // ✅ NEW: safe replace that validates + returns report
+  safeReplaceAll: (coins: unknown, opts?: SafeReplaceOptions) => ReplaceReport;
+>>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
 };
 
 /* ---------------- utils ---------------- */
@@ -53,6 +79,7 @@ function validateCoinInput(
   if (c.fineWeightGrams > 50_000) throw new Error("Fine weight seems too large.");
 }
 
+<<<<<<< HEAD
 /* ---------------- seed coins ---------------- */
 
 const seedCoins: CoinType[] = [
@@ -286,6 +313,33 @@ const seedCoins: CoinType[] = [
     fineWeightGrams: 100.0,
     hallmarks: ["Geiger"],
   },
+=======
+function normalizeCoin(raw: any): CoinType {
+  // allow older payloads missing createdAt etc
+  const name = String(raw?.name ?? "").trim().replace(/\s+/g, " ");
+  const purity = clamp(Number(raw?.purity ?? 0), 0, 1);
+  const fineWeightGrams = clamp(Number(raw?.fineWeightGrams ?? 0), 0, 50_000);
+
+  const coin: CoinType = {
+    id: String(raw?.id ?? makeId("restored")),
+    createdAt: Number.isFinite(raw?.createdAt) ? Number(raw.createdAt) : now(),
+    name,
+    metal: raw?.metal ?? "silver",
+    purity,
+    fineWeightGrams,
+    hallmarks: Array.isArray(raw?.hallmarks) ? raw.hallmarks.map(String) : raw?.hallmarks ? [String(raw.hallmarks)] : undefined,
+    notes: typeof raw?.notes === "string" ? raw.notes : undefined,
+  };
+
+  validateCoinInput(coin);
+  return coin;
+}
+
+/* ---------------- seed coins ---------------- */
+
+const seedCoins: CoinType[] = [
+  // ... (UNCHANGED: your seed list)
+>>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
 ];
 
 /* ---------------- dedupe (fixes your duplicate ASE) ---------------- */
@@ -339,6 +393,35 @@ function extractCoins(persisted: any): CoinType[] {
   return [];
 }
 
+<<<<<<< HEAD
+=======
+/* ---------------- safe replace helpers ---------------- */
+
+function safeNormalizeCoins(input: unknown): { coins: CoinType[]; report: ReplaceReport } {
+  const warnings: string[] = [];
+  const arr = Array.isArray(input) ? input : [];
+
+  let applied = 0;
+  let dropped = 0;
+
+  const normalized: CoinType[] = [];
+  for (const raw of arr) {
+    try {
+      const c = normalizeCoin(raw);
+      normalized.push(c);
+      applied++;
+    } catch (e: any) {
+      dropped++;
+      warnings.push(
+        `Dropped coin: ${(raw?.name ?? raw?.id ?? "unknown").toString()} (${e?.message ?? "invalid"})`
+      );
+    }
+  }
+
+  return { coins: normalized, report: { applied, dropped, warnings } };
+}
+
+>>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
 /* ---------------- store ---------------- */
 
 export const useCoinStore = create<CoinState>()(
@@ -349,14 +432,20 @@ export const useCoinStore = create<CoinState>()(
 
       seedIfEmpty: () => {
         const existing = get().coins;
+<<<<<<< HEAD
 
         // If empty, seed
+=======
+>>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
         if (!existing || existing.length === 0) {
           set({ coins: seedCoins });
           return;
         }
+<<<<<<< HEAD
 
         // Merge + dedupe
+=======
+>>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
         const merged = mergeSeeds(existing);
         const a = existing.map((c) => c.id).join("|");
         const b = merged.map((c) => c.id).join("|");
@@ -408,12 +497,59 @@ export const useCoinStore = create<CoinState>()(
       },
 
       clearAll: () => set({ coins: [] }),
+<<<<<<< HEAD
+=======
+
+      // existing (kept)
+      replaceAll: (coinsFromBackup) => {
+        const merged = mergeSeeds(Array.isArray(coinsFromBackup) ? coinsFromBackup : []);
+        set({ coins: merged });
+      },
+
+      // ✅ NEW
+      safeReplaceAll: (incoming, opts) => {
+        const keepSeeds = opts?.keepSeeds ?? true;
+        const keepLocalExtras = opts?.keepLocalExtras ?? false;
+
+        const { coins: normalized, report } = safeNormalizeCoins(incoming);
+
+        const current = get().coins;
+        const currentById = new Map(current.map((c) => [c.id, c]));
+
+        let next = normalized;
+
+        if (keepLocalExtras) {
+          // preserve any local coins not present in incoming (by id)
+          const incomingIds = new Set(normalized.map((c) => c.id));
+          const extras = current.filter((c) => !incomingIds.has(c.id));
+          next = [...normalized, ...extras];
+        }
+
+        if (keepSeeds) next = mergeSeeds(next);
+        else next = dedupeByNamePreferSeeds(next);
+
+        set({ coins: next });
+
+        // warning if we overwrote a coin id with different shape
+        for (const c of normalized) {
+          const prev = currentById.get(c.id);
+          if (prev && prev.name !== c.name) {
+            report.warnings.push(`Coin id ${c.id} name changed "${prev.name}" → "${c.name}"`);
+          }
+        }
+
+        return report;
+      },
+>>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
     }),
     {
       name: "stackd:coins",
       storage: createJSONStorage(() => AsyncStorage),
+<<<<<<< HEAD
 
       // ✅ bump version so migrate runs and removes the duplicate ASE
+=======
+>>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
       version: 6,
 
       migrate: (persisted) => {
@@ -426,7 +562,10 @@ export const useCoinStore = create<CoinState>()(
 
       partialize: (state) => ({ coins: state.coins }),
 
+<<<<<<< HEAD
       // ✅ seed AFTER hydration to prevent overwrite-to-empty problems
+=======
+>>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
       onRehydrateStorage: () => () => {
         useCoinStore.setState({ hasHydrated: true });
         useCoinStore.getState().seedIfEmpty();

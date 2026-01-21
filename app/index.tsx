@@ -17,6 +17,10 @@ import { useCoinStore } from "../src/stores/coinStore";
 import { useSpotStore } from "../src/stores/spotStore";
 import { useSettingsStore } from "../src/stores/settingsStore";
 
+<<<<<<< HEAD
+=======
+
+>>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
 import { MyStackConviction } from "../src/components/MyStackConviction";
 
 // tokens
@@ -118,6 +122,10 @@ export default function HomeScreen() {
   const spotError = useSpotStore((s) => s.error);
   const clearSpotError = useSpotStore((s) => s.clearError);
 
+<<<<<<< HEAD
+=======
+
+>>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
   // UI state
   const [showPurchases, setShowPurchases] = useState(false);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
@@ -167,8 +175,18 @@ export default function HomeScreen() {
   }, [entries, fineOzByCoinId]);
 
   const spot = currency === "ZAR" ? spotZar : spotUsd;
+<<<<<<< HEAD
   const portfolioValue = spot > 0 ? totalOz * spot : 0;
 
+=======
+  const spotPerUnit = useMemo(() => {
+    if (!Number.isFinite(spot) || spot <= 0) return 0;
+    return unit === "g" ? spot / TROY_OZ_GRAMS : spot;
+  }, [spot, unit]);
+  const portfolioValue = spot > 0 ? totalOz * spot : 0;
+
+
+>>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
   // ✅ Hero level chip
   const level = useMemo(() => getStackLevel(totalOz), [totalOz]);
   const nextLevel = useMemo(() => getNextLevel(totalOz), [totalOz]);
@@ -280,7 +298,11 @@ export default function HomeScreen() {
           </Text>
 
           <Text style={styles.heroSub}>
+<<<<<<< HEAD
             {formatWeight(totalOz, unit)} • {formatSpot(spot, currency)}/oz •{" "}
+=======
+            {formatWeight(totalOz, unit)} • {formatSpot(spotPerUnit, currency)}/{unit} •{" "}
+>>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
             {fetchedAt ? "updated" : "pull to refresh"}
           </Text>
 
@@ -443,6 +465,10 @@ export default function HomeScreen() {
         >
           <Text style={styles.ctaText}>＋ Stack</Text>
         </Pressable>
+<<<<<<< HEAD
+=======
+
+>>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
       </ScrollView>
     </SafeAreaView>
   );
