@@ -24,26 +24,25 @@ export type CloudPublishRequest = {
   };
 };
 
-// Relay publish response (new relay returns createdAt)
 export type CloudPublishResponse = {
   pointer: string;
   createdAt?: number;
-  publishedAt?: number; // compat if you ever use that name
+  publishedAt?: number;
 };
 
 /**
- * Relay response from GET /v1/journal/latest
- * - legacy relay stored/returned ciphertext directly
- * - new relay (Irys) still returns ciphertext by fetching from gateway, plus createdAt
+ * Response from GET /v1/journal/latest
+ * - legacy relay returns ciphertext directly
+ * - Irys relay returns pointer+metadata only
  */
 export type CloudLatestResponse = {
   pointer: string;
   snapshotHash: string;
   schemaVersion: string;
-  nonceB64: string;
-  ciphertextB64: string;
 
-  // timestamp (optional, depends on relay version)
+  nonceB64?: string;
+  ciphertextB64?: string;
+
   publishedAt?: number;
   createdAt?: number;
 };
@@ -57,20 +56,13 @@ export type CloudStorage = {
   challenge: (walletAddress: string, snapshotHash: string) => Promise<CloudChallenge>;
   publish: (req: CloudPublishRequest) => Promise<CloudPublishResponse>;
   latest: (walletAddress: string) => Promise<CloudLatestResponse | null>;
-
-  // credits (for UI)
   creditsBalance: (walletAddress: string) => Promise<CloudCreditsBalanceResponse>;
 };
 
-// -------- Config / injected signer --------
-
-// Highest priority: explicitly set at runtime (eg from Settings / debug)
+// -------- Config --------
 let RELAY_BASE_URL_OVERRIDE = "";
-
-// Next priority: EXPO_PUBLIC_ env (works in Metro when set correctly)
 const RELAY_BASE_URL_ENV = String(process.env.EXPO_PUBLIC_RELAY_URL ?? "").trim();
 
-// signer injection
 let cloudSignMessages: null | ((messages: string[]) => Promise<string[]>) = null;
 
 export function setRelayBaseUrl(url: string | null) {
@@ -81,7 +73,6 @@ export function setCloudSignMessages(fn: null | ((messages: string[]) => Promise
   cloudSignMessages = fn;
 }
 
-// Backwards compatibility
 export function setCloudSignMessage(fn: null | ((message: string) => Promise<string>)) {
   if (!fn) {
     cloudSignMessages = null;
@@ -94,7 +85,6 @@ export function setCloudSignMessage(fn: null | ((message: string) => Promise<str
   };
 }
 
-// optional context (debug)
 let walletContext: { walletAddressB64: string | null; walletAddressB58: string | null } = {
   walletAddressB64: null,
   walletAddressB58: null,
@@ -107,13 +97,12 @@ export function setCloudWalletContext(ctx: {
   walletContext = ctx;
 }
 
+// -------- Helpers --------
 function normalizeBaseUrl(u: string) {
   return String(u || "").trim().replace(/\/+$/, "");
 }
 
-// Expo Constants “extra” (works for dev client + production if you wire it in)
 function relayFromConstantsExtra(): string {
-  // expoConfig is preferred in newer SDKs, manifest for older
   const extraA: any = (Constants as any)?.expoConfig?.extra;
   const extraB: any = (Constants as any)?.manifest?.extra;
   const extra = extraA ?? extraB ?? {};
@@ -130,25 +119,16 @@ function mustBaseUrl() {
   const fromExtra = normalizeBaseUrl(relayFromConstantsExtra());
   if (fromExtra) return fromExtra;
 
-  console.log("[cloudStorage] baseUrl missing. Debug:", {
-    override: RELAY_BASE_URL_OVERRIDE || null,
-    env: RELAY_BASE_URL_ENV || null,
-    extra: relayFromConstantsExtra() || null,
-  });
-
   throw new Error("Relay baseUrl not configured (EXPO_PUBLIC_RELAY_URL).");
 }
 
-// -------- Helpers --------
 function padB64(s: string) {
   const t = String(s ?? "");
   const mod = t.length % 4;
-  if (mod === 0) return t;
-  return t + "=".repeat(4 - mod);
+  return mod === 0 ? t : t + "=".repeat(4 - mod);
 }
 
 function b64ToBytes(b64: string) {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { Buffer } = require("buffer");
   return Buffer.from(padB64(b64), "base64");
 }
@@ -162,59 +142,65 @@ function toNum(x: any): number | undefined {
 }
 
 function pickTimestampFromJson(x: any): number | undefined {
-  // accept either key (and accept 0? no)
-  const a = toNum(x?.createdAt);
-  const b = toNum(x?.publishedAt);
-  return a ?? b;
+  return toNum(x?.createdAt) ?? toNum(x?.publishedAt);
 }
 
 function mapFetchError(status: number, txt: string) {
-  // Your relay returns 402 JSON for insufficient credits
   if (status === 402) {
     try {
       const j = JSON.parse(txt);
       if (j?.error === "INSUFFICIENT_CREDITS") {
-        const cur = Number.isFinite(j.current) ? j.current : undefined;
-        const req = Number.isFinite(j.required) ? j.required : undefined;
-        const msg =
-          typeof cur === "number" && typeof req === "number"
-            ? `Insufficient credits (${cur}/${req}).`
-            : "Insufficient credits.";
-        const err: any = new Error(msg);
+        const err: any = new Error("Insufficient credits.");
         err.code = "INSUFFICIENT_CREDITS";
-        err.current = cur;
-        err.required = req;
         return err;
       }
-    } catch {
-      // fall through
-    }
+    } catch {}
   }
   return new Error(txt || `Request failed (${status}).`);
 }
 
-// -------- Relay implementation --------
+// -------- Irys fetch --------
+async function fetchIrysEncryptedBlob(pointer: string): Promise<{ nonceB64: string; ciphertextB64: string }> {
+  const txId = pointer.startsWith("irys:") ? pointer.slice(5) : pointer;
+  const url = `https://gateway.irys.xyz/${txId}`;
+
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`Irys fetch failed (${r.status})`);
+
+  const j = await r.json();
+  const nonceB64 = toStr(j?.nonceB64);
+  const ciphertextB64 = toStr(j?.ciphertextB64);
+
+  if (!nonceB64 || !ciphertextB64) {
+    throw new Error("Irys blob malformed.");
+  }
+
+  return { nonceB64, ciphertextB64 };
+}
+
+// TypeScript narrowing guard
+function assertHasCiphertext(
+  x: CloudLatestResponse
+): asserts x is CloudLatestResponse & { nonceB64: string; ciphertextB64: string } {
+  if (!x.nonceB64 || !x.ciphertextB64) {
+    throw new Error("Latest missing ciphertext.");
+  }
+}
+
+// -------- Implementation --------
 class RelayCloudStorage implements CloudStorage {
   async challenge(walletAddress: string, snapshotHash: string) {
     const base = mustBaseUrl();
-    const url =
-      `${base}/v1/journal/challenge` +
-      `?walletAddress=${encodeURIComponent(walletAddress)}` +
-      `&snapshotHash=${encodeURIComponent(snapshotHash)}`;
-
-    const r = await fetch(url);
-    if (!r.ok) {
-      const txt = await r.text().catch(() => "");
-      throw new Error(`Challenge failed (${r.status}): ${txt || r.statusText}`);
-    }
+    const r = await fetch(
+      `${base}/v1/journal/challenge?walletAddress=${encodeURIComponent(walletAddress)}&snapshotHash=${encodeURIComponent(snapshotHash)}`
+    );
+    if (!r.ok) throw new Error(`Challenge failed (${r.status})`);
     return (await r.json()) as CloudChallenge;
   }
 
   async publish(req: CloudPublishRequest) {
     const base = mustBaseUrl();
-    const url = `${base}/v1/journal/publish`;
-
-    const r = await fetch(url, {
+    const r = await fetch(`${base}/v1/journal/publish`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(req),
@@ -222,34 +208,25 @@ class RelayCloudStorage implements CloudStorage {
 
     if (!r.ok) {
       const txt = await r.text().catch(() => "");
-      throw mapFetchError(r.status, txt || r.statusText);
+      throw mapFetchError(r.status, txt);
     }
 
-    const raw = (await r.json()) as any;
+    const raw = await r.json();
+    const ts = pickTimestampFromJson(raw);
 
-    const out: CloudPublishResponse = {
+    return {
       pointer: toStr(raw?.pointer),
-      ...(typeof pickTimestampFromJson(raw) === "number"
-        ? { createdAt: pickTimestampFromJson(raw), publishedAt: pickTimestampFromJson(raw) }
-        : {}),
+      ...(typeof ts === "number" ? { createdAt: ts, publishedAt: ts } : {}),
     };
-
-    if (!out.pointer) throw new Error("Publish returned malformed payload from relay.");
-    return out;
   }
 
   async latest(walletAddress: string) {
     const base = mustBaseUrl();
-    const url = `${base}/v1/journal/latest?walletAddress=${encodeURIComponent(walletAddress)}`;
-
-    const r = await fetch(url);
+    const r = await fetch(`${base}/v1/journal/latest?walletAddress=${encodeURIComponent(walletAddress)}`);
     if (r.status === 404) return null;
-    if (!r.ok) {
-      const txt = await r.text().catch(() => "");
-      throw new Error(`Latest failed (${r.status}): ${txt || r.statusText}`);
-    }
+    if (!r.ok) throw new Error(`Latest failed (${r.status})`);
 
-    const raw = (await r.json()) as any;
+    const raw = await r.json();
     const ts = pickTimestampFromJson(raw);
 
     const out: CloudLatestResponse = {
@@ -261,34 +238,26 @@ class RelayCloudStorage implements CloudStorage {
       ...(typeof ts === "number" ? { createdAt: ts, publishedAt: ts } : {}),
     };
 
-    if (!out.pointer || !out.snapshotHash || !out.schemaVersion || !out.nonceB64 || !out.ciphertextB64) {
-      throw new Error("Latest returned malformed payload from relay.");
+    if (!out.pointer || !out.snapshotHash || !out.schemaVersion) {
+      throw new Error("Latest malformed.");
     }
 
+    if ((!out.nonceB64 || !out.ciphertextB64) && out.pointer.startsWith("irys:")) {
+      const blob = await fetchIrysEncryptedBlob(out.pointer);
+      out.nonceB64 = blob.nonceB64;
+      out.ciphertextB64 = blob.ciphertextB64;
+    }
+
+    assertHasCiphertext(out);
     return out;
   }
 
   async creditsBalance(walletAddress: string) {
     const base = mustBaseUrl();
-    const url = `${base}/v1/credits/balance?walletAddress=${encodeURIComponent(walletAddress)}`;
-
-    const r = await fetch(url);
-    if (!r.ok) {
-      const txt = await r.text().catch(() => "");
-      throw new Error(`Credits failed (${r.status}): ${txt || r.statusText}`);
-    }
-
-    const raw = (await r.json()) as any;
-
-    const out: CloudCreditsBalanceResponse = {
-      walletAddress: toStr(raw?.walletAddress),
-      credits: Number(raw?.credits ?? 0),
-    };
-
-    if (!out.walletAddress) throw new Error("Credits returned malformed payload from relay.");
-    if (!Number.isFinite(out.credits) || out.credits < 0) out.credits = 0;
-
-    return out;
+    const r = await fetch(`${base}/v1/credits/balance?walletAddress=${encodeURIComponent(walletAddress)}`);
+    if (!r.ok) throw new Error(`Credits failed (${r.status})`);
+    const raw = await r.json();
+    return { walletAddress: toStr(raw?.walletAddress), credits: Number(raw?.credits ?? 0) };
   }
 }
 
@@ -296,17 +265,15 @@ export function getCloudStorage(): CloudStorage {
   return new RelayCloudStorage();
 }
 
-// Utility: base64 signature string -> base58 bytes signature
+// -------- Utilities --------
 export function walletSigB64ToB58(sigB64: string) {
   const bytes = b64ToBytes(sigB64);
-  if (bytes.length !== 64) {
-    throw new Error(`Wallet signature bytes length unexpected: ${bytes.length}`);
-  }
+  if (bytes.length !== 64) throw new Error(`Wallet signature bytes length unexpected: ${bytes.length}`);
   return bs58.encode(bytes);
 }
 
 export function getCloudSigner() {
-  if (!cloudSignMessages) throw new Error("Cloud signer not set (setCloudSignMessages).");
+  if (!cloudSignMessages) throw new Error("Cloud signer not set");
   return cloudSignMessages;
 }
 

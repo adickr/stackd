@@ -1,9 +1,5 @@
-<<<<<<< HEAD
-import React from "react";
-import { View, Text, Pressable, StyleSheet } from "react-native";
-=======
 // app/(modal)/settings.tsx
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -11,10 +7,12 @@ import {
   StyleSheet,
   Alert,
   ScrollView,
+  Modal,
+  ActivityIndicator,
 } from "react-native";
->>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
+import { useFocusEffect } from "@react-navigation/native";
 
 import {
   useSettingsStore,
@@ -22,21 +20,19 @@ import {
   DisplayCurrency,
 } from "../../src/stores/settingsStore";
 import { useSpotStore } from "../../src/stores/spotStore";
-<<<<<<< HEAD
-=======
 import { useAccountStore } from "../../src/stores/accountStore";
 
 import {
   publishEncryptedSnapshot,
   restoreLatestEncryptedSnapshot,
   checkCloudBackupExists,
+  computeDeterministicSnapshotHashForCurrentState,
 } from "../../src/services/cloudJournal";
 
 import {
   setCloudSignMessages,
   setCloudSignMessage,
   setCloudWalletContext,
-  getCloudStorage,
 } from "../../src/services/cloudStorage";
 
 import {
@@ -53,6 +49,44 @@ function isUserCancel(err: any) {
   );
 }
 
+function isRateLimited(err: any) {
+  const raw =
+    String(err?.message ?? err ?? "") +
+    " " +
+    String(err?.code ?? "") +
+    " " +
+    String(err?.status ?? "") +
+    " " +
+    String(err?.response?.status ?? "") +
+    " " +
+    String(err?.response?.data?.error ?? "") +
+    " " +
+    String(err?.response?.data?.message ?? "");
+
+  const msg = raw.toLowerCase();
+
+  // Common signatures
+  if (msg.includes("429")) return true;
+  if (msg.includes("too many requests")) return true;
+  if (msg.includes("rate limit")) return true;
+  if (msg.includes("ratelimit")) return true;
+  if (msg.includes("rate-limited")) return true;
+
+  return false;
+}
+
+function showRateLimitOk() {
+  Alert.alert("Please try again shortly.", "", [{ text: "OK" }]);
+}
+
+function showFriendlyError(title: string, err: any) {
+  if (isRateLimited(err)) {
+    showRateLimitOk();
+    return;
+  }
+  Alert.alert(title, err?.message ?? String(err));
+}
+
 function shortAddr(a: string) {
   if (!a) return "";
   if (a.length <= 12) return a;
@@ -63,7 +97,9 @@ function formatWhen(ts?: number | null) {
   if (!ts) return "Unknown";
   return new Date(ts).toLocaleString();
 }
->>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
+
+type CloudBusyMode = "idle" | "backup" | "restore";
+const CURRENCIES: DisplayCurrency[] = ["USD", "ZAR", "EUR", "GBP"];
 
 export default function SettingsScreen() {
   const router = useRouter();
@@ -72,26 +108,26 @@ export default function SettingsScreen() {
   const currency = useSettingsStore((s) => s.currency);
   const setUnit = useSettingsStore((s) => s.setUnit);
   const setCurrency = useSettingsStore((s) => s.setCurrency);
-  const reset = useSettingsStore((s) => s.reset);
 
-<<<<<<< HEAD
-  const refreshSpot = useSpotStore((s) => s.refreshSpot);
-
-  return (
-    <SafeAreaView style={styles.safe} edges={["top"]}>
-      <View style={styles.container}>
-=======
-  // Persisted cloud backup UI metadata (assumes you added these to settingsStore)
-  const hasCloudBackup = useSettingsStore((s) => (s as any).hasCloudBackup ?? false);
-  const lastCloudBackupAt = useSettingsStore((s) => (s as any).lastCloudBackupAt ?? null);
-  const setCloudBackupState = useSettingsStore((s) => (s as any).setCloudBackupState);
-
-  const [showOfflineBackup, setShowOfflineBackup] = useState(false);
-  const [checkingCloud, setCheckingCloud] = useState(false);
-  const [checkingCredits, setCheckingCredits] = useState(false);
-  const [credits, setCredits] = useState<number | null>(null);
+  const hasCloudBackup = useSettingsStore(
+    (s) => (s as any).hasCloudBackup ?? false
+  );
+  const lastCloudBackupAt = useSettingsStore(
+    (s) => (s as any).lastCloudBackupAt ?? null
+  );
+  const setCloudBackupState = useSettingsStore(
+    (s) => (s as any).setCloudBackupState
+  );
 
   const refreshSpot = useSpotStore((s) => s.refreshSpot);
+  const spotLoading = useSpotStore((s) => s.isLoading);
+  const spotError = useSpotStore((s) => s.error);
+
+  // ✅ NEW: we can now read per-gram too (derived in spotStore)
+  const perOzByCurrency = useSpotStore((s) => s.silverPerOzByCurrency);
+  const perGramByCurrency = useSpotStore(
+    (s) => (s as any).silverPerGramByCurrency as Record<string, number> | undefined
+  );
 
   const isConnected = useAccountStore((s) => s.isConnected);
   const walletAddressB64 = useAccountStore((s) => s.walletAddressB64);
@@ -102,19 +138,33 @@ export default function SettingsScreen() {
   const signMessage = useAccountStore((s) => s.signMessage);
   const signMessagesMaybe = useAccountStore((s) => (s as any).signMessages);
 
-  const refreshCredits = async () => {
-    if (!isConnected || !walletAddressB58) return;
-    try {
-      setCheckingCredits(true);
-      const storage = getCloudStorage();
-      const res = await storage.creditsBalance(walletAddressB58);
-      setCredits(Number.isFinite(res.credits) ? res.credits : 0);
-    } catch {
-      // ignore: relay might be unreachable
-    } finally {
-      setCheckingCredits(false);
-    }
-  };
+  // Credits
+  const credits = useAccountStore((s) => (s as any).credits as number | undefined);
+  const refreshCredits = useAccountStore(
+    (s) => (s as any).refreshCredits as undefined | (() => Promise<void>)
+  );
+
+  const [cloudBusy, setCloudBusy] = useState<CloudBusyMode>("idle");
+  const [cloudBusyText, setCloudBusyText] = useState<string>("");
+
+  // cloud state
+  const [checkingCloud, setCheckingCloud] = useState(false);
+  const [cloudResolved, setCloudResolved] = useState(false); // ✅ gate UI
+  const [backupSynced, setBackupSynced] = useState(false);
+  const [backupMsg, setBackupMsg] = useState<string>("");
+
+  const [restoreModalVisible, setRestoreModalVisible] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [currencyPickerOpen, setCurrencyPickerOpen] = useState(false);
+
+  const resolveSeq = useRef(0);
+  const lastWalletRef = useRef<string | null>(null);
+
+  // Pre-fetch spot once
+  useEffect(() => {
+    refreshSpot().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Register signer + wallet context for cloud flows
   useEffect(() => {
@@ -154,133 +204,245 @@ export default function SettingsScreen() {
     };
   }, [isConnected, walletAddressB64, walletAddressB58, signMessage, signMessagesMaybe]);
 
-  // On connect, ask relay for latest backup + current credit balance.
+  // Credits fetch on connect
   useEffect(() => {
-    let cancelled = false;
+    if (!isConnected || !walletAddressB58) return;
+    if (typeof refreshCredits !== "function") return;
+    refreshCredits().catch(() => {});
+  }, [isConnected, walletAddressB58, refreshCredits]);
 
-    (async () => {
-      if (!isConnected || !walletAddressB58) return;
+  // ✅ Core resolve: latest + localHash compare (with seq guard)
+  const syncBackupUi = async (reason: string) => {
+    const seq = ++resolveSeq.current;
 
-      try {
-        setCheckingCloud(true);
-        const res = await checkCloudBackupExists();
-        if (cancelled) return;
+    console.log("[cloud] resolve start", {
+      reason,
+      seq,
+      isConnected,
+      walletAddressB58,
+    });
 
-        // credits are separate
-        refreshCredits();
+    // while resolving, gate UI
+    setCloudResolved(false);
+    setCheckingCloud(true);
 
-        if (res.exists) {
-          const ts =
-            typeof (res as any).publishedAt === "number"
-              ? (res as any).publishedAt
-              : typeof (res as any).createdAt === "number"
-              ? (res as any).createdAt
-              : null;
+    // if not connected, reset everything deterministically
+    if (!isConnected || !walletAddressB58) {
+      setBackupSynced(false);
+      setBackupMsg("");
+      setCloudBackupState?.({ hasCloudBackup: false, lastCloudBackupAt: null });
+      setCheckingCloud(false);
+      setCloudResolved(true);
+      console.log("[cloud] resolve end (not connected)", { seq });
+      return;
+    }
 
-          setCloudBackupState?.({
-            hasCloudBackup: true,
-            lastCloudBackupAt: ts,
-          });
-        } else {
-          setCloudBackupState?.({ hasCloudBackup: false, lastCloudBackupAt: null });
-        }
-      } catch {
-        // ignore; cloud might be temporarily unreachable
-      } finally {
-        if (!cancelled) setCheckingCloud(false);
+    try {
+      // kick credits refresh, but don't block
+      if (typeof refreshCredits === "function") refreshCredits().catch(() => {});
+
+      const cloud = await checkCloudBackupExists();
+      if (seq !== resolveSeq.current) return;
+
+      console.log(
+        "[cloud] latest",
+        cloud.exists
+          ? { exists: true, snapshotHash: cloud.snapshotHash }
+          : { exists: false }
+      );
+
+      if (!cloud.exists || !cloud.snapshotHash) {
+        setBackupSynced(false);
+        setBackupMsg("");
+        setCloudBackupState?.({ hasCloudBackup: false, lastCloudBackupAt: null });
+
+        console.log("[cloud] resolve end (no remote)", { seq });
+        return;
       }
 
-      // credits balance is independent from /latest
-      await refreshCredits();
-    })();
+      const localHash = await computeDeterministicSnapshotHashForCurrentState();
+      if (seq !== resolveSeq.current) return;
 
-    return () => {
-      cancelled = true;
-    };
-  }, [isConnected, walletAddressB58, setCloudBackupState]);
+      const matches = localHash === cloud.snapshotHash;
+
+      setBackupSynced(matches);
+      setBackupMsg(matches ? "Already backed up — no changes since last backup." : "");
+      setCloudBackupState?.({
+        hasCloudBackup: true,
+        lastCloudBackupAt: typeof cloud.createdAt === "number" ? cloud.createdAt : null,
+      });
+
+      console.log("[cloud] resolve end", { seq, matches });
+    } catch (e: any) {
+      if (seq !== resolveSeq.current) return;
+      console.warn("[cloud] resolve failed", e?.message ?? String(e));
+      // fail closed: keep action gated until next resolve
+    } finally {
+      if (seq === resolveSeq.current) {
+        setCheckingCloud(false);
+        setCloudResolved(true);
+      }
+    }
+  };
+
+  // ✅ IMPORTANT: resolve on reconnect / wallet change
+  useEffect(() => {
+    const w = walletAddressB58 ?? null;
+
+    // if disconnected, hard reset and mark resolved
+    if (!isConnected || !w) {
+      lastWalletRef.current = null;
+      setBackupSynced(false);
+      setBackupMsg("");
+      setCloudBackupState?.({ hasCloudBackup: false, lastCloudBackupAt: null });
+      setCloudResolved(true);
+      setCheckingCloud(false);
+      return;
+    }
+
+    if (lastWalletRef.current !== w) {
+      lastWalletRef.current = w;
+      syncBackupUi("wallet-change").catch(() => {});
+    } else {
+      syncBackupUi("reconnect").catch(() => {});
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isConnected, walletAddressB58]);
+
+  // Resolve when Settings gains focus too
+  useFocusEffect(
+    React.useCallback(() => {
+      syncBackupUi("focus").catch(() => {});
+      const t = setTimeout(() => syncBackupUi("focus-delay").catch(() => {}), 700);
+      return () => clearTimeout(t);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isConnected, walletAddressB58])
+  );
+
+  const creditsPill = useMemo(() => {
+    if (!isConnected) return { label: "Wallet required", kind: "neutral" as const };
+    if (!cloudResolved || checkingCloud) return { label: "Checking…", kind: "neutral" as const };
+
+    if (typeof credits === "number") {
+      if (credits <= 0) return { label: `Credits: ${credits}`, kind: "warn" as const };
+      return { label: `Credits: ${credits}`, kind: "good" as const };
+    }
+
+    return { label: "Credits: —", kind: "neutral" as const };
+  }, [isConnected, cloudResolved, checkingCloud, credits]);
+
+  const cloudPrimaryLabel = useMemo(() => {
+    if (!isConnected) return "Connect wallet";
+    if (!cloudResolved || checkingCloud) return "Checking…";
+    if (cloudBusy !== "idle") return cloudBusy === "backup" ? "Backing up…" : "Working…";
+    if (credits === 0) return "No credits";
+    if (backupSynced) return "Backed up";
+    return hasCloudBackup ? "Back up again" : "Back up now";
+  }, [isConnected, cloudResolved, checkingCloud, cloudBusy, credits, backupSynced, hasCloudBackup]);
+
+  const cloudPrimaryDisabled = useMemo(() => {
+    if (!isConnected) return false; // allow connect flow
+    if (!cloudResolved || checkingCloud) return true; // ✅ gate until resolved
+    if (cloudBusy !== "idle") return true;
+    if (credits === 0) return true;
+    return backupSynced; // ✅ disable if unchanged
+  }, [isConnected, cloudResolved, checkingCloud, cloudBusy, credits, backupSynced]);
 
   const handleConnectForCloud = async () => {
     try {
       await connect();
     } catch (e: any) {
       if (isUserCancel(e)) return;
-      Alert.alert("Wallet connect failed", e?.message ?? String(e));
+      showFriendlyError("Wallet connect failed", e);
     }
   };
 
   const handlePublishCloud = async () => {
+    if (cloudBusy !== "idle") return;
+
     if (!isConnected || !walletAddressB58) {
-      Alert.alert("Wallet required", "Connect your wallet to enable cloud backup.");
+      await handleConnectForCloud();
       return;
     }
 
+    if (!cloudResolved || checkingCloud) {
+      await syncBackupUi("publish-while-unresolved").catch(() => {});
+      return;
+    }
+
+    if (backupSynced) return;
+
     try {
+      setCloudBusy("backup");
+      setCloudBusyText("Uploading backup…");
+      setBackupMsg("");
+
       const res = await publishEncryptedSnapshot();
+      console.log("[cloud] publish result", res);
 
-      // refresh credits (publish may have been dedupbed and not spent)
-      try {
-        setCheckingCredits(true);
-        const c = await getCloudStorage().creditsBalance(walletAddressB58);
-        setCredits(typeof c?.credits === "number" ? c.credits : 0);
-      } catch {
-        // ignore
-      } finally {
-        setCheckingCredits(false);
+      await syncBackupUi("post-publish");
+
+      if (typeof refreshCredits === "function") await refreshCredits();
+
+      if (res.status === "unchanged") {
+        setBackupMsg(res.message || "Already backed up — no changes since last backup.");
+      } else {
+        setBackupMsg(res.message || "Backup saved.");
       }
-
-      // immediate UI update (local), relay timestamp will show after reconnect or next check
-      const now = Date.now();
-      setCloudBackupState?.({ hasCloudBackup: true, lastCloudBackupAt: now });
-
-      console.log("[settings] cloud backup ok", res);
-      Alert.alert("Backed up", "Your encrypted cloud backup was saved.");
     } catch (e: any) {
-      console.log("[settings] cloud backup error", e?.message ?? String(e), e);
       if (isUserCancel(e)) return;
-      if (String(e?.code ?? "") === "INSUFFICIENT_CREDITS") {
-        Alert.alert(
-          "No credits",
-          "You have no backup credits left. Ask Adi for more credits or top up."
-        );
-        // refresh displayed balance
-        try {
-          const c = await getCloudStorage().creditsBalance(walletAddressB58);
-          setCredits(typeof c?.credits === "number" ? c.credits : 0);
-        } catch {}
-        return;
-      }
-      Alert.alert("Backup failed", e?.message ?? String(e));
+      showFriendlyError("Backup failed", e);
+    } finally {
+      setCloudBusy("idle");
+      setCloudBusyText("");
     }
   };
 
-  const handleRestoreCloud = async () => {
+  const openRestoreModal = async () => {
+    if (cloudBusy !== "idle") return;
+    if (!isConnected || !walletAddressB58) {
+      Alert.alert("Wallet required", "Connect your wallet to restore from cloud.");
+      return;
+    }
+    if (!cloudResolved || checkingCloud) {
+      await syncBackupUi("restore-while-unresolved").catch(() => {});
+    }
+    if (!hasCloudBackup) return;
+    setRestoreModalVisible(true);
+  };
+
+  const closeRestoreModal = () => {
+    if (cloudBusy === "restore") return;
+    setRestoreModalVisible(false);
+    setCloudBusyText("");
+  };
+
+  const confirmRestore = async () => {
+    if (cloudBusy !== "idle") return;
     if (!isConnected || !walletAddressB58) {
       Alert.alert("Wallet required", "Connect your wallet to restore from cloud.");
       return;
     }
 
-    Alert.alert(
-      "Restore backup?",
-      "This will replace the portfolio on this phone with your latest cloud backup.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Restore",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              const res = await restoreLatestEncryptedSnapshot();
-              console.log("[settings] cloud restore ok", res);
-              Alert.alert("Restored", "Your portfolio has been restored.");
-            } catch (e: any) {
-              console.log("[settings] cloud restore error", e?.message ?? String(e), e);
-              if (isUserCancel(e)) return;
-              Alert.alert("Restore failed", e?.message ?? String(e));
-            }
-          },
-        },
-      ]
-    );
+    try {
+      setCloudBusy("restore");
+      setCloudBusyText("Decrypting locally…");
+
+      await restoreLatestEncryptedSnapshot();
+      setRestoreModalVisible(false);
+
+      await syncBackupUi("post-restore");
+      Alert.alert("Restored", "Your portfolio has been restored.");
+    } catch (e: any) {
+      if (isUserCancel(e)) {
+        setRestoreModalVisible(false);
+        return;
+      }
+      showFriendlyError("Restore failed", e);
+    } finally {
+      setCloudBusy("idle");
+      setCloudBusyText("");
+    }
   };
 
   const handleExport = async () => {
@@ -295,6 +457,12 @@ export default function SettingsScreen() {
           res.message ??
             "Your current app build doesn't support Android export yet. Rebuild/reinstall the dev client."
         );
+        return;
+      }
+
+      // If a service underneath threw a rate limit error, keep UX clean
+      if (isRateLimited(res as any)) {
+        showRateLimitOk();
         return;
       }
 
@@ -316,6 +484,12 @@ export default function SettingsScreen() {
 
           if (!res.ok) {
             if (res.reason === "cancelled") return;
+
+            if (isRateLimited(res as any)) {
+              showRateLimitOk();
+              return;
+            }
+
             Alert.alert("Import failed", res.message ?? "Unknown error");
             return;
           }
@@ -325,10 +499,25 @@ export default function SettingsScreen() {
             "Imported",
             `Anchors: ${report.anchorsImported}\nInventories: ${report.inventoriesImported}`
           );
+
+          await syncBackupUi("post-import");
         },
       },
     ]);
   };
+
+  // ✅ NEW: show spot hint in selected unit inside Currency section
+  const spotHint = useMemo(() => {
+    const c = currency;
+    if (unit === "g") {
+      const v = perGramByCurrency?.[c];
+      if (typeof v === "number" && v > 0) return `${c} ${v.toFixed(2)} / g`;
+      return null;
+    }
+    const v = perOzByCurrency?.[c];
+    if (typeof v === "number" && v > 0) return `${c} ${v.toFixed(2)} / oz`;
+    return null;
+  }, [currency, unit, perGramByCurrency, perOzByCurrency]);
 
   return (
     <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
@@ -337,7 +526,6 @@ export default function SettingsScreen() {
         contentContainerStyle={styles.scrollContent}
         keyboardShouldPersistTaps="handled"
       >
->>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
         <View style={styles.headerRow}>
           <Text style={styles.title}>Settings</Text>
 
@@ -363,173 +551,312 @@ export default function SettingsScreen() {
         </Section>
 
         <Section title="Currency">
-          <Segmented<DisplayCurrency>
-            value={currency}
-            options={[
-              { label: "ZAR", value: "ZAR" },
-              { label: "USD", value: "USD" },
+          <Pressable
+            onPress={() => setCurrencyPickerOpen(true)}
+            style={({ pressed }) => [
+              styles.navBtn,
+              { backgroundColor: "rgba(0,0,0,0.08)" },
+              pressed && { opacity: 0.85 },
             ]}
-            onChange={(v) => {
-              setCurrency(v);
-<<<<<<< HEAD
-              refreshSpot(); // refresh after switching currency
-=======
-              refreshSpot();
->>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
-            }}
-          />
-          <Text style={styles.helper}>Spot refreshes when you switch currency.</Text>
+          >
+            <Text style={styles.navText}>Display currency: {currency}</Text>
+          </Pressable>
+
+          <Text style={styles.helper}>
+            {spotHint ? `Spot: ${spotHint}. ` : ""}
+            Spot refreshes when you change currency.
+            {spotError ? ` (Spot error: ${spotError})` : ""}
+          </Text>
         </Section>
 
-<<<<<<< HEAD
-        <Pressable
-          onPress={() => {
-            reset();
-            refreshSpot(); // ✅ no args
-=======
-        <Section title="Cloud backup">
-          {!isConnected ? (
-            <>
-              <Pressable
-                onPress={handleConnectForCloud}
-                style={({ pressed }) => [styles.navBtn, pressed && { opacity: 0.85 }]}
-              >
-                <Text style={styles.navText}>Connect wallet</Text>
-              </Pressable>
+        <Section title="Cloud Backup (Encrypted)">
+          <View style={styles.cloudCard}>
+            <View style={styles.cloudTopRow}>
+              <Text style={styles.cloudTitle}>Cloud Backup</Text>
+              <StatusPill label={creditsPill.label} kind={creditsPill.kind} />
+            </View>
 
-              <Text style={styles.helper}>
-                Connect your wallet to enable encrypted cloud backups.
+            <Text style={styles.cloudSub}>
+              {!isConnected
+                ? "Connect your wallet to enable cloud backups."
+                : !cloudResolved || checkingCloud
+                ? "Checking backup status…"
+                : hasCloudBackup
+                ? `Last backup: ${formatWhen(lastCloudBackupAt)}`
+                : "Not backed up"}
+            </Text>
+
+            {isConnected ? (
+              <Text style={styles.cloudMeta} numberOfLines={2}>
+                Wallet: {walletAddressB58 ? shortAddr(walletAddressB58) : "—"}
               </Text>
-            </>
-          ) : (
-            <>
-              <View style={styles.accountPill}>
-                <Text style={styles.accountText} numberOfLines={2}>
-                  Wallet connected: {walletAddressB58 ? shortAddr(walletAddressB58) : "—"}
-                  {"\n"}Last backup: {checkingCloud ? "Checking…" : formatWhen(lastCloudBackupAt)}
-                  {"\n"}Backup credits: {checkingCredits ? "Checking…" : credits == null ? "—" : credits}
+            ) : null}
+
+            {backupMsg ? <Text style={styles.cloudMeta}>{backupMsg}</Text> : null}
+
+            {cloudBusy !== "idle" ? (
+              <View style={styles.cloudProgressRow}>
+                <ActivityIndicator />
+                <Text style={styles.cloudProgressText}>
+                  {cloudBusyText || "Working…"}
                 </Text>
               </View>
+            ) : null}
 
+            <Pressable
+              onPress={handlePublishCloud}
+              disabled={cloudPrimaryDisabled}
+              style={({ pressed }) => [
+                styles.cloudPrimaryBtn,
+                cloudPrimaryDisabled && { opacity: 0.55 },
+                pressed && !cloudPrimaryDisabled && { opacity: 0.85 },
+              ]}
+            >
+              <Text style={styles.cloudPrimaryText}>{cloudPrimaryLabel}</Text>
+            </Pressable>
+
+            {isConnected && hasCloudBackup ? (
               <Pressable
-                onPress={handlePublishCloud}
-                disabled={
-                  checkingCredits || (typeof credits === "number" && credits <= 0)
-                }
+                onPress={openRestoreModal}
+                disabled={cloudBusy !== "idle" || !cloudResolved || checkingCloud}
                 style={({ pressed }) => [
-                  styles.navBtn,
-                  { marginTop: 10 },
-                  (checkingCredits || (typeof credits === "number" && credits <= 0)) && { opacity: 0.55 },
-                  pressed && { opacity: 0.85 },
+                  styles.cloudSecondaryBtn,
+                  (cloudBusy !== "idle" || !cloudResolved || checkingCloud) && {
+                    opacity: 0.55,
+                  },
+                  pressed &&
+                    cloudBusy === "idle" &&
+                    cloudResolved &&
+                    !checkingCloud && { opacity: 0.85 },
                 ]}
               >
-                <Text style={styles.navText}>Back up now</Text>
+                <Text style={styles.cloudSecondaryText}>Restore from backup</Text>
               </Pressable>
+            ) : null}
 
-              {hasCloudBackup ? (
-                <Pressable
-                  onPress={handleRestoreCloud}
-                  style={({ pressed }) => [
-                    styles.navBtn,
-                    { marginTop: 10 },
-                    pressed && { opacity: 0.85 },
-                  ]}
-                >
-                  <Text style={styles.navText}>Restore backup</Text>
-                </Pressable>
-              ) : null}
-
+            {isConnected ? (
               <Pressable
                 onPress={disconnect}
+                disabled={cloudBusy !== "idle"}
                 style={({ pressed }) => [
-                  styles.navBtn,
-                  { marginTop: 10, opacity: pressed ? 0.85 : 1 },
+                  styles.cloudLinkBtn,
+                  cloudBusy !== "idle" && { opacity: 0.55 },
+                  pressed && cloudBusy === "idle" && { opacity: 0.75 },
                 ]}
+                hitSlop={10}
               >
-                <Text style={styles.navText}>Disconnect wallet</Text>
+                <Text style={styles.cloudLinkText}>Disconnect wallet</Text>
               </Pressable>
+            ) : null}
 
-              <Text style={styles.helper}>
-                Backups are encrypted and can only be restored using your wallet.
-              </Text>
-            </>
-          )}
+            <Text style={styles.cloudInfo}>
+              Your data is encrypted on this device using your wallet. Stackd cannot read or
+              recover your backup.
+            </Text>
+          </View>
         </Section>
 
-        <Section title="Offline backup">
+        <View style={{ marginTop: 6 }}>
           <Pressable
-            onPress={() => setShowOfflineBackup((v) => !v)}
-            style={({ pressed }) => [styles.linkBtn, pressed && { opacity: 0.75 }]}
+            onPress={() => setShowAdvanced((v) => !v)}
+            style={({ pressed }) => [{ paddingVertical: 6 }, pressed && { opacity: 0.75 }]}
             hitSlop={10}
           >
-            <Text style={styles.linkText}>
-              {showOfflineBackup ? "Hide offline backup" : "Show offline backup"}
+            <Text style={styles.advancedLink}>
+              {showAdvanced ? "Hide advanced" : "Advanced"}
             </Text>
           </Pressable>
 
-          {showOfflineBackup ? (
-            <>
+          {showAdvanced ? (
+            <View style={{ marginTop: 10, gap: 10 }}>
               <Pressable
                 onPress={handleExport}
                 style={({ pressed }) => [
                   styles.navBtn,
-                  { marginTop: 12 },
+                  { backgroundColor: "rgba(0,0,0,0.06)" },
                   pressed && { opacity: 0.85 },
                 ]}
               >
-                <Text style={styles.navText}>Export backup</Text>
+                <Text style={[styles.navText, { opacity: 0.75 }]}>
+                  Export offline backup
+                </Text>
               </Pressable>
 
               <Pressable
                 onPress={handleImport}
                 style={({ pressed }) => [
                   styles.navBtn,
-                  { marginTop: 10 },
+                  { backgroundColor: "rgba(0,0,0,0.06)" },
                   pressed && { opacity: 0.85 },
                 ]}
               >
-                <Text style={styles.navText}>Import backup</Text>
+                <Text style={[styles.navText, { opacity: 0.75 }]}>
+                  Import offline backup
+                </Text>
               </Pressable>
-
-              <Text style={styles.helper}>
-                Stores a backup file on your device. Useful for reviews or moving data manually.
+              <Text style={styles.advancedHelper}>
+                Offline backups are manual files stored on your device.
               </Text>
-            </>
-          ) : (
-            <Text style={styles.helper}>Optional: export/import a local backup file.</Text>
-          )}
-        </Section>
+            </View>
+          ) : null}
+        </View>
 
-        <Pressable
-          onPress={() => {
-            reset();
-            refreshSpot();
->>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
-          }}
-          style={({ pressed }) => [styles.resetBtn, pressed && { opacity: 0.85 }]}
+        {/* Restore modal */}
+        <Modal
+          visible={restoreModalVisible}
+          transparent
+          animationType="fade"
+          onRequestClose={closeRestoreModal}
         >
-          <Text style={styles.resetText}>Reset to defaults</Text>
-        </Pressable>
-<<<<<<< HEAD
-      </View>
-=======
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalCard}>
+              <Text style={styles.modalTitle}>Restore encrypted backup?</Text>
+
+              <Text style={styles.modalBody}>
+                This will replace all current data on this device.{"\n"}
+                You must sign with the same wallet used to create the backup.{"\n"}
+                Stackd cannot recover backups if the wallet is unavailable.
+              </Text>
+
+              <View style={styles.modalWarn}>
+                <Text style={styles.modalWarnText}>This action is destructive</Text>
+              </View>
+
+              {cloudBusy === "restore" ? (
+                <View style={styles.modalProgressRow}>
+                  <ActivityIndicator />
+                  <Text style={styles.modalProgressText}>
+                    {cloudBusyText || "Restoring…"}
+                  </Text>
+                </View>
+              ) : null}
+
+              <View style={styles.modalButtons}>
+                <Pressable
+                  onPress={confirmRestore}
+                  disabled={cloudBusy === "restore"}
+                  style={({ pressed }) => [
+                    styles.modalPrimary,
+                    cloudBusy === "restore" && { opacity: 0.55 },
+                    pressed && cloudBusy !== "restore" && { opacity: 0.85 },
+                  ]}
+                >
+                  <Text style={styles.modalPrimaryText}>Continue</Text>
+                </Pressable>
+
+                <Pressable
+                  onPress={closeRestoreModal}
+                  disabled={cloudBusy === "restore"}
+                  style={({ pressed }) => [
+                    styles.modalSecondary,
+                    cloudBusy === "restore" && { opacity: 0.55 },
+                    pressed && cloudBusy !== "restore" && { opacity: 0.85 },
+                  ]}
+                >
+                  <Text style={styles.modalSecondaryText}>Cancel</Text>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        </Modal>
+
+        {/* Currency picker modal */}
+        <Modal
+          visible={currencyPickerOpen}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setCurrencyPickerOpen(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalCard}>
+              <Text style={styles.modalTitle}>Choose currency</Text>
+
+              {spotLoading ? (
+                <View
+                  style={{
+                    marginTop: 10,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 10,
+                  }}
+                >
+                  <ActivityIndicator />
+                  <Text style={{ fontSize: 12, fontWeight: "800", opacity: 0.7 }}>
+                    Updating spot…
+                  </Text>
+                </View>
+              ) : null}
+
+              {CURRENCIES.map((c) => {
+                const active = c === currency;
+                const perOzOk =
+                  typeof perOzByCurrency?.[c] === "number" && perOzByCurrency[c] > 0;
+
+                return (
+                  <Pressable
+                    key={c}
+                    onPress={async () => {
+                      if (!perOzOk) {
+                        try {
+                          await refreshSpot();
+                        } catch (e: any) {
+                          if (isRateLimited(e)) {
+                            showRateLimitOk();
+                            return;
+                          }
+                        }
+                      }
+
+                      const stillMissing =
+                        typeof perOzByCurrency?.[c] !== "number" || perOzByCurrency[c] <= 0;
+
+                      if (stillMissing) {
+                        // keep the UX simple if spot isn't available (often due to rate limits)
+                        showRateLimitOk();
+                        return;
+                      }
+
+                      setCurrency(c);
+                      setCurrencyPickerOpen(false);
+                    }}
+                    style={({ pressed }) => [
+                      styles.navBtn,
+                      {
+                        marginTop: 10,
+                        backgroundColor: active
+                          ? "rgba(0,0,0,0.12)"
+                          : "rgba(0,0,0,0.06)",
+                      },
+                      pressed && { opacity: 0.85 },
+                    ]}
+                  >
+                    <Text style={[styles.navText, { opacity: active ? 0.9 : 0.75 }]}>
+                      {c}
+                      {active ? " ✓" : ""}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+
+              <Pressable
+                onPress={() => setCurrencyPickerOpen(false)}
+                style={({ pressed }) => [
+                  styles.modalSecondary,
+                  { marginTop: 12 },
+                  pressed && { opacity: 0.85 },
+                ]}
+              >
+                <Text style={styles.modalSecondaryText}>Cancel</Text>
+              </Pressable>
+            </View>
+          </View>
+        </Modal>
       </ScrollView>
->>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
     </SafeAreaView>
   );
 }
 
-<<<<<<< HEAD
-function Section({
-  title,
-  children,
-}: {
-  title: string;
-  children: React.ReactNode;
-}) {
-=======
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
->>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
   return (
     <View style={styles.section}>
       <Text style={styles.sectionTitle}>{title}</Text>
@@ -571,15 +898,34 @@ function Segmented<T extends string>({
   );
 }
 
+function StatusPill({
+  label,
+  kind,
+}: {
+  label: string;
+  kind: "good" | "warn" | "neutral";
+}) {
+  return (
+    <View
+      style={[
+        styles.pill,
+        kind === "good" && styles.pillGood,
+        kind === "warn" && styles.pillWarn,
+        kind === "neutral" && styles.pillNeutral,
+      ]}
+    >
+      <Text style={styles.pillText} numberOfLines={1}>
+        {label}
+      </Text>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: "#fff" },
 
-<<<<<<< HEAD
-  container: { flex: 1, padding: 16 },
-=======
   scroll: { flex: 1 },
   scrollContent: { padding: 16, paddingBottom: 28 },
->>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
 
   headerRow: {
     flexDirection: "row",
@@ -587,10 +933,6 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     marginBottom: 18,
   },
-<<<<<<< HEAD
-
-=======
->>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
   title: { fontSize: 22, fontWeight: "800" },
 
   doneBtn: { alignSelf: "flex-start" },
@@ -602,12 +944,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.06)",
     marginBottom: 14,
   },
-  sectionTitle: {
-    fontSize: 13,
-    fontWeight: "800",
-    opacity: 0.75,
-    marginBottom: 10,
-  },
+  sectionTitle: { fontSize: 13, fontWeight: "800", opacity: 0.75, marginBottom: 10 },
 
   segmentWrap: {
     flexDirection: "row",
@@ -615,20 +952,13 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     backgroundColor: "rgba(0,0,0,0.08)",
   },
-  segment: {
-    flex: 1,
-    paddingVertical: 12,
-    alignItems: "center",
-    justifyContent: "center",
-  },
+  segment: { flex: 1, paddingVertical: 12, alignItems: "center", justifyContent: "center" },
   segmentActive: { backgroundColor: "rgba(0,0,0,0.18)" },
   segmentText: { fontSize: 14, fontWeight: "800", opacity: 0.7 },
   segmentTextActive: { opacity: 1 },
 
   helper: { marginTop: 10, fontSize: 12, opacity: 0.65 },
 
-<<<<<<< HEAD
-=======
   navBtn: {
     borderRadius: 16,
     paddingVertical: 14,
@@ -638,33 +968,89 @@ const styles = StyleSheet.create({
   },
   navText: { fontSize: 14, fontWeight: "900", opacity: 0.85 },
 
-  accountPill: {
-    borderRadius: 16,
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    backgroundColor: "rgba(0,0,0,0.08)",
-  },
-  accountText: { fontSize: 12, fontWeight: "800", opacity: 0.75 },
+  cloudCard: { borderRadius: 18, padding: 14, backgroundColor: "rgba(255,255,255,0.65)" },
+  cloudTopRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 },
+  cloudTitle: { fontSize: 15, fontWeight: "900", opacity: 0.9 },
+  cloudSub: { marginTop: 6, fontSize: 12, fontWeight: "800", opacity: 0.7 },
+  cloudMeta: { marginTop: 6, fontSize: 12, fontWeight: "800", opacity: 0.6 },
 
-  linkBtn: {
-    alignSelf: "flex-start",
-    paddingVertical: 6,
-  },
-  linkText: {
-    fontSize: 13,
-    fontWeight: "900",
-    opacity: 0.7,
-    textDecorationLine: "underline",
-  },
+  cloudProgressRow: { marginTop: 10, flexDirection: "row", alignItems: "center", gap: 10 },
+  cloudProgressText: { fontSize: 12, fontWeight: "800", opacity: 0.75 },
 
->>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
-  resetBtn: {
-    marginTop: 6,
+  cloudPrimaryBtn: {
+    marginTop: 12,
     borderRadius: 16,
     paddingVertical: 14,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(0,0,0,0.10)",
+    backgroundColor: "rgba(0,0,0,0.12)",
   },
-  resetText: { fontSize: 14, fontWeight: "900", opacity: 0.85 },
+  cloudPrimaryText: { fontSize: 14, fontWeight: "900", opacity: 0.9 },
+
+  cloudSecondaryBtn: {
+    marginTop: 10,
+    borderRadius: 16,
+    paddingVertical: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.08)",
+  },
+  cloudSecondaryText: { fontSize: 14, fontWeight: "900", opacity: 0.85 },
+
+  cloudLinkBtn: { marginTop: 10, alignSelf: "flex-start", paddingVertical: 6 },
+  cloudLinkText: { fontSize: 13, fontWeight: "900", opacity: 0.7, textDecorationLine: "underline" },
+
+  cloudInfo: { marginTop: 10, fontSize: 12, opacity: 0.65, lineHeight: 16 },
+
+  advancedLink: { fontSize: 12, fontWeight: "900", opacity: 0.55, textDecorationLine: "underline" },
+  advancedHelper: { marginTop: 6, fontSize: 11, opacity: 0.55, lineHeight: 15 },
+
+  pill: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "rgba(0,0,0,0.10)",
+    maxWidth: 160,
+  },
+  pillGood: { backgroundColor: "rgba(0,0,0,0.14)" },
+  pillWarn: { backgroundColor: "rgba(0,0,0,0.10)" },
+  pillNeutral: { backgroundColor: "rgba(0,0,0,0.08)" },
+  pillText: { fontSize: 12, fontWeight: "900", opacity: 0.75 },
+
+  modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.35)", padding: 16, justifyContent: "center" },
+  modalCard: { borderRadius: 18, backgroundColor: "#fff", padding: 16 },
+  modalTitle: { fontSize: 16, fontWeight: "900", opacity: 0.9 },
+  modalBody: { marginTop: 10, fontSize: 13, fontWeight: "700", opacity: 0.75, lineHeight: 18 },
+
+  modalWarn: {
+    marginTop: 12,
+    borderRadius: 14,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    backgroundColor: "rgba(0,0,0,0.06)",
+  },
+  modalWarnText: { fontSize: 12, fontWeight: "900", opacity: 0.7 },
+
+  modalProgressRow: { marginTop: 12, flexDirection: "row", alignItems: "center", gap: 10 },
+  modalProgressText: { fontSize: 12, fontWeight: "800", opacity: 0.75 },
+
+  modalButtons: { marginTop: 14, gap: 10 },
+
+  modalPrimary: {
+    borderRadius: 16,
+    paddingVertical: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.12)",
+  },
+  modalPrimaryText: { fontSize: 14, fontWeight: "900", opacity: 0.9 },
+
+  modalSecondary: {
+    borderRadius: 16,
+    paddingVertical: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.08)",
+  },
+  modalSecondaryText: { fontSize: 14, fontWeight: "900", opacity: 0.85 },
 });

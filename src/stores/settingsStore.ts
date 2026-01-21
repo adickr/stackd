@@ -3,49 +3,65 @@ import { persist, createJSONStorage } from "zustand/middleware";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 export type WeightUnit = "oz" | "g";
-export type DisplayCurrency = "ZAR" | "USD";
+
+/* ---------------------------------------------
+   ✅ Single source of truth for currencies
+---------------------------------------------- */
+
+export const SUPPORTED_CURRENCIES = ["USD", "ZAR", "EUR", "GBP"] as const;
+export type DisplayCurrency = typeof SUPPORTED_CURRENCIES[number];
+
+/* ---------------------------------------------
+   Store shape
+---------------------------------------------- */
 
 type SettingsState = {
   unit: WeightUnit;
   currency: DisplayCurrency;
 
-<<<<<<< HEAD
-=======
-  // Cloud backup UI metadata (persisteds)
+  // Cloud backup UI metadata (persisted)
   hasCloudBackup: boolean;
   lastCloudBackupAt: number | null;
 
->>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
   setUnit: (unit: WeightUnit) => void;
   toggleUnit: () => void;
 
   setCurrency: (currency: DisplayCurrency) => void;
   toggleCurrency: () => void;
 
-<<<<<<< HEAD
-  reset: () => void;
-};
+  setCloudBackupState: (p: {
+    hasCloudBackup: boolean;
+    lastCloudBackupAt: number | null;
+  }) => void;
 
-const DEFAULTS: Pick<SettingsState, "unit" | "currency"> = {
-  unit: "oz",
-  currency: "ZAR",
-=======
-  setCloudBackupState: (p: { hasCloudBackup: boolean; lastCloudBackupAt: number | null }) => void;
   clearCloudBackupState: () => void;
-
-  reset: () => void;
 };
+
+/* ---------------------------------------------
+   Defaults
+---------------------------------------------- */
 
 const DEFAULTS: Pick<
   SettingsState,
   "unit" | "currency" | "hasCloudBackup" | "lastCloudBackupAt"
 > = {
   unit: "oz",
-  currency: "ZAR",
+  currency: "USD",
   hasCloudBackup: false,
   lastCloudBackupAt: null,
->>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
 };
+
+/* ---------------------------------------------
+   Guards
+---------------------------------------------- */
+
+function isValidCurrency(x: any): x is DisplayCurrency {
+  return SUPPORTED_CURRENCIES.includes(x);
+}
+
+/* ---------------------------------------------
+   Store
+---------------------------------------------- */
 
 export const useSettingsStore = create<SettingsState>()(
   persist(
@@ -53,45 +69,51 @@ export const useSettingsStore = create<SettingsState>()(
       ...DEFAULTS,
 
       setUnit: (unit) => set({ unit }),
-      toggleUnit: () => set({ unit: get().unit === "oz" ? "g" : "oz" }),
+      toggleUnit: () =>
+        set({ unit: get().unit === "oz" ? "g" : "oz" }),
 
       setCurrency: (currency) => set({ currency }),
-<<<<<<< HEAD
-      toggleCurrency: () => set({ currency: get().currency === "ZAR" ? "USD" : "ZAR" }),
 
-=======
+      // ⚠️ Dev convenience only (kept intentionally)
       toggleCurrency: () =>
-        set({ currency: get().currency === "ZAR" ? "USD" : "ZAR" }),
+        set({ currency: get().currency === "USD" ? "ZAR" : "USD" }),
 
       setCloudBackupState: ({ hasCloudBackup, lastCloudBackupAt }) =>
         set({ hasCloudBackup, lastCloudBackupAt }),
 
       clearCloudBackupState: () =>
         set({ hasCloudBackup: false, lastCloudBackupAt: null }),
-
-      // Reset should return app preferences to defaults (including UI backup metadata)
->>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
-      reset: () => set({ ...DEFAULTS }),
     }),
     {
       name: "stackd:settings",
       storage: createJSONStorage(() => AsyncStorage),
-<<<<<<< HEAD
-      version: 1,
-=======
-      version: 2, // bump because we've added fields
+      version: 4,
+
       migrate: (persisted: any, version) => {
-        // If upgrading from older versions, fill in new fields safely.
+        let next = { ...persisted };
+
+        // v1 → v2: add cloud backup fields
         if (version < 2) {
-          return {
-            ...persisted,
-            hasCloudBackup: false,
-            lastCloudBackupAt: null,
-          };
+          next.hasCloudBackup = false;
+          next.lastCloudBackupAt = null;
         }
-        return persisted;
+
+        // v2 → v3: ensure currency exists
+        if (version < 3) {
+          next.currency = isValidCurrency(next.currency)
+            ? next.currency
+            : "USD";
+        }
+
+        // v3 → v4: allow EUR / GBP
+        if (version < 4) {
+          next.currency = isValidCurrency(next.currency)
+            ? next.currency
+            : "USD";
+        }
+
+        return next;
       },
->>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
     }
   )
 );

@@ -30,10 +30,7 @@ yarn-error.*
 .DS_Store
 *.pem
 
-# local env files
-.env*.local
-
-# typescript
+# TypeScript
 *.tsbuildinfo
 
 # generated native folders
@@ -43,5 +40,4 @@ yarn-error.*
 # Environment variables
 .env
 .env.*
-
- 2c3aa92 (Initial Stackd app (submission-ready))
+!.env.example

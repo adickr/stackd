@@ -1,17 +1,12 @@
-<<<<<<< HEAD
-=======
 // src/stores/stackStore.ts
->>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { StackEntry } from "../domain/stackEntry";
 
-<<<<<<< HEAD
+import { StackEntry, StackCategory } from "../domain/stackEntry";
+import type { DisplayCurrency } from "./settingsStore";
+
 const uid = () => Math.random().toString(36).slice(2) + "-" + Date.now().toString(36);
-=======
-const uid = () =>
-  Math.random().toString(36).slice(2) + "-" + Date.now().toString(36);
 
 type ReplaceReport = {
   applied: number;
@@ -26,48 +21,50 @@ type SafeReplaceOptions = {
   // default true when knownCoinIds is provided
   dropUnknownCoinRefs?: boolean;
 };
->>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
 
 type StackState = {
   entries: StackEntry[];
+
   addEntry: (entry: Omit<StackEntry, "id" | "createdAt">) => void;
   getEntry: (id?: string) => StackEntry | undefined;
   removeEntry: (id: string) => void;
+
   updateEntry: (
     id: string,
-<<<<<<< HEAD
-    patch: Partial<Pick<StackEntry, "coinTypeId" | "quantity" | "totalPaid" | "purchasedAt">>
-  ) => void;
-  clearAll: () => void;
-};
-
-function coerceEntries(persisted: any): StackEntry[] {
-  // Some older setups store just an array; others store { entries: [...] }
-  if (Array.isArray(persisted)) return persisted as StackEntry[];
-  if (Array.isArray(persisted?.entries)) return persisted.entries as StackEntry[];
-  if (Array.isArray(persisted?.state?.entries)) return persisted.state.entries as StackEntry[];
-  return [];
-}
-
-=======
     patch: Partial<
-      Pick<StackEntry, "coinTypeId" | "quantity" | "totalPaid" | "purchasedAt">
+      Pick<
+        StackEntry,
+        "coinTypeId" | "quantity" | "totalPaid" | "paidCurrency" | "purchasedAt" | "category" | "notes"
+      >
     >
   ) => void;
+
   clearAll: () => void;
 
   replaceAll: (entries: StackEntry[]) => void;
 
-  // ✅ NEW
   safeReplaceAll: (entries: unknown, opts?: SafeReplaceOptions) => ReplaceReport;
 };
 
 function coerceEntries(persisted: any): StackEntry[] {
   if (Array.isArray(persisted)) return persisted as StackEntry[];
   if (Array.isArray(persisted?.entries)) return persisted.entries as StackEntry[];
-  if (Array.isArray(persisted?.state?.entries))
-    return persisted.state.entries as StackEntry[];
+  if (Array.isArray(persisted?.state?.entries)) return persisted.state.entries as StackEntry[];
   return [];
+}
+
+function isDisplayCurrency(x: any): x is DisplayCurrency {
+  return x === "USD" || x === "ZAR" || x === "EUR" || x === "GBP";
+}
+
+function isStackCategory(x: any): x is StackCategory {
+  return (
+    x === "bullion" ||
+    x === "collector" ||
+    x === "jewellery" ||
+    x === "scrap" ||
+    x === "other"
+  );
 }
 
 function normalizeEntry(raw: any): StackEntry {
@@ -79,19 +76,31 @@ function normalizeEntry(raw: any): StackEntry {
   const id = String(raw?.id ?? uid());
   const createdAt = Number.isFinite(raw?.createdAt) ? Number(raw.createdAt) : Date.now();
 
+  // ✅ paidCurrency (default ZAR for old backups)
+  const paidCurrency: DisplayCurrency = isDisplayCurrency(raw?.paidCurrency)
+    ? raw.paidCurrency
+    : "ZAR";
+
+  // ✅ category (default other for old backups)
+  const category: StackCategory = isStackCategory(raw?.category) ? raw.category : "other";
+
   if (!coinTypeId) throw new Error("coinTypeId missing");
   if (!Number.isFinite(quantity) || quantity <= 0) throw new Error("quantity invalid");
   if (!Number.isFinite(totalPaid) || totalPaid < 0) throw new Error("totalPaid invalid");
   if (!Number.isFinite(purchasedAt) || purchasedAt <= 0) throw new Error("purchasedAt invalid");
+
+  const notes = typeof raw?.notes === "string" ? raw.notes : undefined;
 
   const e: StackEntry = {
     id,
     coinTypeId,
     quantity,
     totalPaid,
+    paidCurrency,
+    category,
     purchasedAt,
     createdAt,
-    notes: typeof raw?.notes === "string" ? raw.notes : undefined,
+    notes,
   };
 
   return e;
@@ -138,7 +147,6 @@ function safeNormalizeEntries(
   return { entries: normalized, report: { applied, dropped, unknownCoinRefs, warnings } };
 }
 
->>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
 export const useStackStore = create<StackState>()(
   persist(
     (set, get) => ({
@@ -160,39 +168,65 @@ export const useStackStore = create<StackState>()(
         })),
 
       clearAll: () => set({ entries: [] }),
-<<<<<<< HEAD
-=======
 
       replaceAll: (entriesFromBackup) => {
+        // keep old behavior, but you might prefer safeReplaceAll for untrusted backups
         const safe = Array.isArray(entriesFromBackup) ? entriesFromBackup : [];
         set({ entries: safe });
       },
 
-      // ✅ NEW
       safeReplaceAll: (incoming, opts) => {
         const { entries, report } = safeNormalizeEntries(incoming, opts);
-
-        // overwrite with normalized
         set({ entries });
-
         return report;
       },
->>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
     }),
     {
       name: "stackd:stack",
       storage: createJSONStorage(() => AsyncStorage),
-<<<<<<< HEAD
-      version: 2,
+      version: 5,
 
-      // ✅ This fixes your error
-=======
-      version: 3, // bumped
-
->>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
-      migrate: (persistedState: any) => {
+      migrate: (persistedState: any, version) => {
         const entries = coerceEntries(persistedState);
-        return { entries };
+
+        // v<4 -> v4: ensure paidCurrency exists and is valid
+        if (version < 4) {
+          const upgraded = entries.map((e: any) => ({
+            ...e,
+            paidCurrency: isDisplayCurrency(e?.paidCurrency) ? e.paidCurrency : "ZAR",
+          }));
+
+          // and then fall through to v5 normalization below via normalize step
+          const normalized = upgraded.map((e: any) => ({
+            ...e,
+            category: isStackCategory(e?.category) ? e.category : "other",
+            notes: typeof e?.notes === "string" ? e.notes : undefined,
+          }));
+
+          return { entries: normalized };
+        }
+
+        // v4 -> v5: add category default
+        if (version < 5) {
+          const upgraded = entries.map((e: any) => ({
+            ...e,
+            paidCurrency: isDisplayCurrency(e?.paidCurrency) ? e.paidCurrency : "ZAR",
+            category: isStackCategory(e?.category) ? e.category : "other",
+            notes: typeof e?.notes === "string" ? e.notes : undefined,
+          }));
+
+          return { entries: upgraded };
+        }
+
+        // Even on v5+, normalize defensive (handles odd persisted shapes)
+        const normalized = entries.map((e: any) => ({
+          ...e,
+          paidCurrency: isDisplayCurrency(e?.paidCurrency) ? e.paidCurrency : "ZAR",
+          category: isStackCategory(e?.category) ? e.category : "other",
+          notes: typeof e?.notes === "string" ? e.notes : undefined,
+        }));
+
+        return { entries: normalized };
       },
 
       partialize: (state) => ({ entries: state.entries }),

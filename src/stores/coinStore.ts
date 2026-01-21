@@ -4,8 +4,6 @@ import { persist, createJSONStorage } from "zustand/middleware";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { CoinType } from "../domain/coinType";
 
-<<<<<<< HEAD
-=======
 type ReplaceReport = {
   applied: number;
   dropped: number;
@@ -20,7 +18,6 @@ type SafeReplaceOptions = {
   keepLocalExtras?: boolean;
 };
 
->>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
 type CoinState = {
   coins: CoinType[];
   hasHydrated: boolean;
@@ -37,15 +34,12 @@ type CoinState = {
 
   searchCoins: (query: string) => CoinType[];
   clearAll: () => void;
-<<<<<<< HEAD
-=======
 
   // existing (kept)
   replaceAll: (coins: CoinType[]) => void;
 
   // ✅ NEW: safe replace that validates + returns report
   safeReplaceAll: (coins: unknown, opts?: SafeReplaceOptions) => ReplaceReport;
->>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
 };
 
 /* ---------------- utils ---------------- */
@@ -79,241 +73,6 @@ function validateCoinInput(
   if (c.fineWeightGrams > 50_000) throw new Error("Fine weight seems too large.");
 }
 
-<<<<<<< HEAD
-/* ---------------- seed coins ---------------- */
-
-const seedCoins: CoinType[] = [
-  // --- Sovereign 1 oz coins ---
-  {
-    id: "seed_ase_1oz",
-    createdAt: 1,
-    name: "American Silver Eagle 1 oz",
-    metal: "silver",
-    purity: 0.999,
-    fineWeightGrams: 31.1035,
-    hallmarks: ["ASE", "USA"],
-  },
-  {
-    id: "seed_maple_1oz",
-    createdAt: 2,
-    name: "Canadian Maple Leaf 1 oz",
-    metal: "silver",
-    purity: 0.9999,
-    fineWeightGrams: 31.1035,
-    hallmarks: ["RCM", "9999"],
-  },
-  {
-    id: "seed_britannia_1oz",
-    createdAt: 3,
-    name: "Britannia 1 oz",
-    metal: "silver",
-    purity: 0.999,
-    fineWeightGrams: 31.1035,
-    hallmarks: ["UK"],
-  },
-  {
-    id: "seed_philharmonic_1oz",
-    createdAt: 4,
-    name: "Austrian Philharmonic 1 oz",
-    metal: "silver",
-    purity: 0.999,
-    fineWeightGrams: 31.1035,
-    hallmarks: ["Austria"],
-  },
-  {
-    id: "seed_krugerrand_silver_1oz",
-    createdAt: 5,
-    name: "Krugerrand (Silver) 1 oz",
-    metal: "silver",
-    purity: 0.999,
-    fineWeightGrams: 31.1035,
-    hallmarks: ["South Africa"],
-  },
-  {
-    id: "seed_kangaroo_1oz",
-    createdAt: 6,
-    name: "Australian Kangaroo 1 oz",
-    metal: "silver",
-    purity: 0.9999,
-    fineWeightGrams: 31.1035,
-    hallmarks: ["Perth Mint", "9999"],
-  },
-  {
-    id: "seed_libertad_1oz",
-    createdAt: 7,
-    name: "Mexican Libertad 1 oz",
-    metal: "silver",
-    purity: 0.999,
-    fineWeightGrams: 31.1035,
-    hallmarks: ["Mexico"],
-  },
-  {
-    id: "seed_panda_30g",
-    createdAt: 8,
-    name: "Chinese Silver Panda 30 g",
-    metal: "silver",
-    purity: 0.999,
-    fineWeightGrams: 30.0,
-    hallmarks: ["China"],
-  },
-
-  // --- Famous series / popular bullion ---
-  {
-    id: "seed_kookaburra_1oz",
-    createdAt: 20,
-    name: "Australian Kookaburra 1 oz",
-    metal: "silver",
-    purity: 0.9999,
-    fineWeightGrams: 31.1035,
-    hallmarks: ["Perth Mint"],
-  },
-  {
-    id: "seed_koala_1oz",
-    createdAt: 21,
-    name: "Australian Koala 1 oz",
-    metal: "silver",
-    purity: 0.9999,
-    fineWeightGrams: 31.1035,
-    hallmarks: ["Perth Mint"],
-  },
-  {
-    id: "seed_somali_elephant_1oz",
-    createdAt: 22,
-    name: "Somali Elephant 1 oz",
-    metal: "silver",
-    purity: 0.9999,
-    fineWeightGrams: 31.1035,
-    hallmarks: ["Somalia"],
-  },
-  {
-    id: "seed_noahs_ark_1oz",
-    createdAt: 23,
-    name: "Noah’s Ark 1 oz",
-    metal: "silver",
-    purity: 0.999,
-    fineWeightGrams: 31.1035,
-    hallmarks: ["Armenia"],
-  },
-  {
-    id: "seed_germania_1oz",
-    createdAt: 24,
-    name: "Germania 1 oz",
-    metal: "silver",
-    purity: 0.9999,
-    fineWeightGrams: 31.1035,
-    hallmarks: ["Germania Mint"],
-  },
-
-  // --- Generic / useful ---
-  {
-    id: "seed_generic_round_1oz_999",
-    createdAt: 100,
-    name: "Generic round 1 oz (0.999)",
-    metal: "silver",
-    purity: 0.999,
-    fineWeightGrams: 31.1035,
-  },
-  {
-    id: "seed_generic_round_1oz_9999",
-    createdAt: 101,
-    name: "Generic round 1 oz (0.9999)",
-    metal: "silver",
-    purity: 0.9999,
-    fineWeightGrams: 31.1035,
-  },
-
-  // --- Bars ---
-  {
-    id: "seed_bar_100g_generic",
-    createdAt: 200,
-    name: "Silver bar 100 g",
-    metal: "silver",
-    purity: 0.999,
-    fineWeightGrams: 100.0,
-    hallmarks: ["100 g"],
-  },
-  {
-    id: "seed_bar_10oz_generic",
-    createdAt: 201,
-    name: "Silver bar 10 oz",
-    metal: "silver",
-    purity: 0.999,
-    fineWeightGrams: 311.035,
-    hallmarks: ["10 oz"],
-  },
-  {
-    id: "seed_bar_1kg_generic",
-    createdAt: 202,
-    name: "Silver bar 1 kg",
-    metal: "silver",
-    purity: 0.999,
-    fineWeightGrams: 1000.0,
-    hallmarks: ["1 kg"],
-  },
-  {
-    id: "seed_jm_10oz",
-    createdAt: 210,
-    name: "Johnson Matthey bar 10 oz",
-    metal: "silver",
-    purity: 0.999,
-    fineWeightGrams: 311.035,
-    hallmarks: ["JM"],
-  },
-  {
-    id: "seed_engelhard_10oz",
-    createdAt: 211,
-    name: "Engelhard bar 10 oz",
-    metal: "silver",
-    purity: 0.999,
-    fineWeightGrams: 311.035,
-    hallmarks: ["Engelhard"],
-  },
-  {
-    id: "seed_sunshine_10oz",
-    createdAt: 212,
-    name: "Sunshine Mint bar 10 oz",
-    metal: "silver",
-    purity: 0.999,
-    fineWeightGrams: 311.035,
-    hallmarks: ["SMI"],
-  },
-  {
-    id: "seed_scottsdale_10oz",
-    createdAt: 213,
-    name: "Scottsdale bar 10 oz",
-    metal: "silver",
-    purity: 0.999,
-    fineWeightGrams: 311.035,
-    hallmarks: ["Scottsdale"],
-  },
-  {
-    id: "seed_hera_eus_1kg",
-    createdAt: 214,
-    name: "Heraeus bar 1 kg",
-    metal: "silver",
-    purity: 0.999,
-    fineWeightGrams: 1000.0,
-    hallmarks: ["Heraeus"],
-  },
-  {
-    id: "seed_valcambi_100g",
-    createdAt: 215,
-    name: "Valcambi bar 100 g",
-    metal: "silver",
-    purity: 0.999,
-    fineWeightGrams: 100.0,
-    hallmarks: ["Valcambi"],
-  },
-  {
-    id: "seed_geiger_100g",
-    createdAt: 216,
-    name: "Geiger bar 100 g",
-    metal: "silver",
-    purity: 0.999,
-    fineWeightGrams: 100.0,
-    hallmarks: ["Geiger"],
-  },
-=======
 function normalizeCoin(raw: any): CoinType {
   // allow older payloads missing createdAt etc
   const name = String(raw?.name ?? "").trim().replace(/\s+/g, " ");
@@ -339,7 +98,6 @@ function normalizeCoin(raw: any): CoinType {
 
 const seedCoins: CoinType[] = [
   // ... (UNCHANGED: your seed list)
->>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
 ];
 
 /* ---------------- dedupe (fixes your duplicate ASE) ---------------- */
@@ -393,8 +151,6 @@ function extractCoins(persisted: any): CoinType[] {
   return [];
 }
 
-<<<<<<< HEAD
-=======
 /* ---------------- safe replace helpers ---------------- */
 
 function safeNormalizeCoins(input: unknown): { coins: CoinType[]; report: ReplaceReport } {
@@ -421,7 +177,6 @@ function safeNormalizeCoins(input: unknown): { coins: CoinType[]; report: Replac
   return { coins: normalized, report: { applied, dropped, warnings } };
 }
 
->>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
 /* ---------------- store ---------------- */
 
 export const useCoinStore = create<CoinState>()(
@@ -432,20 +187,10 @@ export const useCoinStore = create<CoinState>()(
 
       seedIfEmpty: () => {
         const existing = get().coins;
-<<<<<<< HEAD
-
-        // If empty, seed
-=======
->>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
         if (!existing || existing.length === 0) {
           set({ coins: seedCoins });
           return;
         }
-<<<<<<< HEAD
-
-        // Merge + dedupe
-=======
->>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
         const merged = mergeSeeds(existing);
         const a = existing.map((c) => c.id).join("|");
         const b = merged.map((c) => c.id).join("|");
@@ -497,8 +242,6 @@ export const useCoinStore = create<CoinState>()(
       },
 
       clearAll: () => set({ coins: [] }),
-<<<<<<< HEAD
-=======
 
       // existing (kept)
       replaceAll: (coinsFromBackup) => {
@@ -540,16 +283,10 @@ export const useCoinStore = create<CoinState>()(
 
         return report;
       },
->>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
     }),
     {
       name: "stackd:coins",
       storage: createJSONStorage(() => AsyncStorage),
-<<<<<<< HEAD
-
-      // ✅ bump version so migrate runs and removes the duplicate ASE
-=======
->>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
       version: 6,
 
       migrate: (persisted) => {
@@ -562,10 +299,6 @@ export const useCoinStore = create<CoinState>()(
 
       partialize: (state) => ({ coins: state.coins }),
 
-<<<<<<< HEAD
-      // ✅ seed AFTER hydration to prevent overwrite-to-empty problems
-=======
->>>>>>> 2c3aa92 (Initial Stackd app (submission-ready))
       onRehydrateStorage: () => () => {
         useCoinStore.setState({ hasHydrated: true });
         useCoinStore.getState().seedIfEmpty();

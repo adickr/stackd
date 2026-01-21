@@ -1,30 +1,39 @@
 // src/services/spot.ts
 
-export type SpotCurrency = "ZAR" | "USD";
+export type SpotCurrency = "USD" | "ZAR" | "EUR" | "GBP";
 
-export async function fetchSilverPerOz(
-  to: SpotCurrency
-): Promise<{
-  perOz: number;
-  fetchedAt: number;
-  source: string;
-}> {
+type ConvertResponse = {
+  success?: boolean;
+  result?: any;
+  error?: { info?: string };
+};
+
+function requireAccessKey() {
   const accessKey = process.env.EXPO_PUBLIC_EXCHANGERATE_KEY;
-
   if (!accessKey) {
     throw new Error(
       "Missing EXPO_PUBLIC_EXCHANGERATE_KEY. Add it to .env and restart Expo with: npx expo start -c"
     );
   }
+  return accessKey;
+}
+
+async function convert(
+  from: string,
+  to: string,
+  amount: number
+): Promise<{ result: number; fetchedAt: number; source: string }> {
+  const accessKey = requireAccessKey();
 
   const url =
     `https://api.exchangerate.host/convert` +
     `?access_key=${encodeURIComponent(accessKey)}` +
-    `&from=XAG&to=${encodeURIComponent(to)}` +
-    `&amount=1`;
+    `&from=${encodeURIComponent(from)}` +
+    `&to=${encodeURIComponent(to)}` +
+    `&amount=${encodeURIComponent(String(amount))}`;
 
   const res = await fetch(url);
-  const data = await res.json().catch(() => null);
+  const data: ConvertResponse | null = await res.json().catch(() => null);
 
   if (!res.ok) {
     throw new Error(`Spot API HTTP ${res.status}: ${JSON.stringify(data)}`);
@@ -36,14 +45,51 @@ export async function fetchSilverPerOz(
 
   const result = Number(data.result);
   if (!Number.isFinite(result) || result <= 0) {
-    throw new Error(`Invalid spot result for ${to}: ${String(data.result)}`);
+    throw new Error(`Invalid convert result ${from}→${to}: ${String(data?.result)}`);
   }
 
   return {
-    perOz: result,
+    result,
     fetchedAt: Date.now(),
-    source: `exchangerate.host XAG→${to}`,
+    source: `exchangerate.host ${from}→${to}`,
   };
+}
+
+// ✅ Silver spot: 1 oz of silver (XAG) quoted in fiat
+export async function fetchSilverPerOz(
+  to: SpotCurrency
+): Promise<{
+  perOz: number;
+  fetchedAt: number;
+  source: string;
+}> {
+  const r = await convert("XAG", to, 1);
+  return {
+    perOz: r.result,
+    fetchedAt: r.fetchedAt,
+    source: `${r.source} (XAG/oz)`,
+  };
+}
+
+// ✅ Fiat conversion helper (for cross-currency PnL later)
+export async function convertFiat(
+  amount: number,
+  from: SpotCurrency,
+  to: SpotCurrency
+): Promise<{
+  amountOut: number;
+  fetchedAt: number;
+  source: string;
+}> {
+  if (!Number.isFinite(amount) || amount < 0) {
+    throw new Error("convertFiat: amount invalid");
+  }
+  if (from === to) {
+    return { amountOut: amount, fetchedAt: Date.now(), source: "identity" };
+  }
+
+  const r = await convert(from, to, amount);
+  return { amountOut: r.result, fetchedAt: r.fetchedAt, source: r.source };
 }
 
 // Backwards-compatible helper if any older code still imports this
