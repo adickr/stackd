@@ -30,17 +30,109 @@ function pickTs(x: any): number | undefined {
   return undefined;
 }
 
+function normStr(x: any): string | null {
+  if (typeof x !== "string") return null;
+  const t = x.trim();
+  return t.length ? t : null;
+}
+
+function normNum(x: any): number {
+  const n = typeof x === "number" ? x : Number(x);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/**
+ * Build a deterministic (stable) payload for hashing.
+ * CRITICAL:
+ * - Exclude createdAt (it can change across sessions / devices / imports)
+ * - Normalize optional strings to null
+ * - Normalize numbers
+ * - Sort arrays deterministically
+ */
+function buildDeterministicSnapshotPayload(args: {
+  walletAddress: string;
+  coins: any[];
+  entries: any[];
+}) {
+  const { walletAddress, coins, entries } = args;
+
+  const coinsStable = (coins || [])
+    .map((c) => ({
+      id: String(c.id ?? ""),
+      name: normStr(c.name),
+      metal: normStr(c.metal),
+      purity: normNum(c.purity),
+      fineWeightGrams: normNum(c.fineWeightGrams),
+      diameterMm: normNum(c.diameterMm),
+      thicknessMm: normNum(c.thicknessMm),
+      hallmarks: Array.isArray(c.hallmarks)
+        ? c.hallmarks.map((h: any) => normStr(h)).filter(Boolean)
+        : [],
+      notes: normStr(c.notes),
+    }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+
+  const entriesStable = (entries || [])
+    .map((e) => ({
+      coinTypeId: String(e.coinTypeId ?? ""),
+      quantity: normNum(e.quantity),
+      totalPaid: normNum(e.totalPaid),
+      purchasedAt: normNum(e.purchasedAt),
+      notes: normStr(e.notes),
+    }))
+    .sort((a, b) => {
+      if (a.purchasedAt !== b.purchasedAt) return a.purchasedAt - b.purchasedAt;
+      if (a.coinTypeId !== b.coinTypeId) return a.coinTypeId.localeCompare(b.coinTypeId);
+      if (a.quantity !== b.quantity) return a.quantity - b.quantity;
+      return a.totalPaid - b.totalPaid;
+    });
+
+  return {
+    v: 2,
+    walletAddress: String(walletAddress),
+    coins: coinsStable,
+    entries: entriesStable,
+  };
+}
+
+/**
+ * Compute the deterministic hash for CURRENT local portfolio state.
+ * This is what Settings should compare to relay.latest.snapshotHash.
+ */
+async function computeDeterministicSnapshotHashForCurrentState(): Promise<string> {
+  const account = useAccountStore.getState();
+  if (!account.isConnected || !account.walletAddressB58) {
+    throw new Error("Wallet not connected");
+  }
+
+  const walletAddress = account.walletAddressB58;
+  const coins = useCoinStore.getState().coins;
+  const entries = useStackStore.getState().entries;
+
+  const deterministic = buildDeterministicSnapshotPayload({
+    walletAddress,
+    coins,
+    entries,
+  });
+
+  return await hashObjectSha256Hex(deterministic);
+}
+
 /**
  * Relay truth-source check:
  * - No signing
  * - No decryption
  * - Used for UI (Restore button + timestamp)
+ *
+ * IMPORTANT:
+ * Some relays may temporarily report a "latest" pointer without ciphertext.
+ * Treat that case as "no usable backup" (exists:false) to keep UI sane.
  */
 async function checkCloudBackupExists(): Promise<{
   exists: boolean;
   pointer?: string;
   snapshotHash?: string;
-  createdAt?: number; // normalized
+  createdAt?: number;
 }> {
   const account = useAccountStore.getState();
   if (!account.isConnected || !account.walletAddressB58) {
@@ -48,23 +140,32 @@ async function checkCloudBackupExists(): Promise<{
   }
 
   const storage = getCloudStorage();
-  const latest = await storage.latest(account.walletAddressB58);
-  if (!latest) return { exists: false };
 
-  const ts = pickTs(latest);
+  try {
+    const latest = await storage.latest(account.walletAddressB58);
+    if (!latest) return { exists: false };
 
-  return {
-    exists: true,
-    pointer: latest.pointer,
-    snapshotHash: latest.snapshotHash,
-    createdAt: ts,
-  };
+    return {
+      exists: true,
+      pointer: latest.pointer,
+      snapshotHash: latest.snapshotHash,
+      createdAt: pickTs(latest),
+    };
+  } catch (e: any) {
+    const msg = String(e?.message ?? e ?? "");
+    if (msg.toLowerCase().includes("missing ciphertext")) {
+      return { exists: false };
+    }
+    throw e;
+  }
 }
 
 async function publishEncryptedSnapshot(): Promise<{
   pointer: string;
   snapshotHash: string;
-  createdAt?: number; // relay-confirmed if provided
+  createdAt?: number;
+  status: "published" | "unchanged";
+  message?: string;
 }> {
   const account = useAccountStore.getState();
   if (!account.isConnected || !account.walletAddressB58) {
@@ -76,15 +177,30 @@ async function publishEncryptedSnapshot(): Promise<{
   const coins = useCoinStore.getState().coins;
   const entries = useStackStore.getState().entries;
 
+  // Snapshot that we encrypt/restore (can include createdAt etc; that's fine)
   const snapshot = buildSnapshotV1({ walletAddress, coins, entries });
-  const snapshotHash = await hashObjectSha256Hex(snapshot);
+
+  // ✅ Stable hash for dedupe/UI
+  const snapshotHash = await computeDeterministicSnapshotHashForCurrentState();
 
   const storage = getCloudStorage();
+
+  // ✅ Client-side dedupe: avoid wallet prompt + credits when unchanged
+  const latest = await storage.latest(walletAddress).catch(() => null);
+  if (latest?.snapshotHash && latest.snapshotHash === snapshotHash) {
+    return {
+      pointer: latest.pointer,
+      snapshotHash,
+      createdAt: pickTs(latest),
+      status: "unchanged",
+      message: "Already backed up — no changes since last backup.",
+    };
+  }
 
   // 1) Get challenge (no wallet prompt)
   const ch = await storage.challenge(walletAddress, snapshotHash);
 
-  // 2) ONE wallet prompt: sign both messages in one call
+  // 2) ONE wallet prompt: sign both messages
   const signMessages = getCloudSigner();
   const [keySigB64, challengeSigB64] = await signMessages([
     KEY_MESSAGE_PREFIX + walletAddress,
@@ -98,7 +214,7 @@ async function publishEncryptedSnapshot(): Promise<{
   const json = JSON.stringify(snapshot);
   const boxed = await encryptJsonSecretBox({ json, key });
 
-  // 5) Publish using challenge signature (relay may debit credits + upload to Irys)
+  // 5) Publish
   const challengeSigB58 = walletSigB64ToB58(challengeSigB64);
 
   const res = await storage.publish({
@@ -114,9 +230,9 @@ async function publishEncryptedSnapshot(): Promise<{
     },
   });
 
-  // Keep local offline inventory (optional)
+  // Local journal bookkeeping
   const inventoryPayload = {
-    coins: coins
+    coins: (coins || [])
       .map((c) => ({
         id: c.id,
         name: c.name,
@@ -129,8 +245,8 @@ async function publishEncryptedSnapshot(): Promise<{
         notes: c.notes,
         createdAt: c.createdAt,
       }))
-      .sort((a, b) => a.id.localeCompare(b.id)),
-    entries: entries
+      .sort((a, b) => String(a.id).localeCompare(String(b.id))),
+    entries: (entries || [])
       .map((e) => ({
         id: e.id,
         coinTypeId: e.coinTypeId,
@@ -140,7 +256,7 @@ async function publishEncryptedSnapshot(): Promise<{
         createdAt: e.createdAt,
         notes: e.notes,
       }))
-      .sort((a, b) => a.id.localeCompare(b.id)),
+      .sort((a, b) => String(a.id).localeCompare(String(b.id))),
   };
 
   const inventoryHash = hashObject(inventoryPayload);
@@ -152,7 +268,6 @@ async function publishEncryptedSnapshot(): Promise<{
     entries: inventoryPayload.entries as any,
   });
 
-  // Anchor: reuse challenge signature (no extra wallet prompt)
   useJournalStore.getState().addAnchor({
     id: `${snapshot.createdAt}-${Math.random().toString(16).slice(2)}`,
     createdAt: snapshot.createdAt,
@@ -177,8 +292,13 @@ async function publishEncryptedSnapshot(): Promise<{
     snapshotSchemaVersion: snapshot.schemaVersion,
   } as any);
 
-  const createdAt = pickTs(res);
-  return { pointer: res.pointer, snapshotHash, createdAt };
+  return {
+    pointer: res.pointer,
+    snapshotHash,
+    createdAt: pickTs(res),
+    status: "published",
+    message: "Backup saved.",
+  };
 }
 
 async function restoreLatestEncryptedSnapshot(): Promise<{
@@ -196,11 +316,9 @@ async function restoreLatestEncryptedSnapshot(): Promise<{
   const latest = await storage.latest(walletAddress);
   if (!latest) throw new Error("No backup found for this wallet.");
 
-  // Restore needs 1 signature (key derivation)
   const keySigB64 = await account.signMessage(KEY_MESSAGE_PREFIX + walletAddress);
   const key = await deriveKeyFromSigB64(keySigB64);
 
-  // TS + runtime safety: ensure ciphertext is present
   if (!latest.nonceB64 || !latest.ciphertextB64) {
     throw new Error("Cloud backup is missing ciphertext (invalid pointer or fetch failed).");
   }
@@ -213,7 +331,11 @@ async function restoreLatestEncryptedSnapshot(): Promise<{
 
   const snapshot = JSON.parse(json);
 
-  if (!snapshot || snapshot.schemaVersion !== "snapshot.v1" || snapshot.walletAddress !== walletAddress) {
+  if (
+    !snapshot ||
+    snapshot.schemaVersion !== "snapshot.v1" ||
+    snapshot.walletAddress !== walletAddress
+  ) {
     throw new Error("Snapshot schema mismatch or wrong wallet.");
   }
 
@@ -229,5 +351,9 @@ async function restoreLatestEncryptedSnapshot(): Promise<{
   };
 }
 
-// Explicit exports (prevents TS “no exported member” weirdness)
-export { publishEncryptedSnapshot, restoreLatestEncryptedSnapshot, checkCloudBackupExists };
+export {
+  publishEncryptedSnapshot,
+  restoreLatestEncryptedSnapshot,
+  checkCloudBackupExists,
+  computeDeterministicSnapshotHashForCurrentState,
+};

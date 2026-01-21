@@ -3,7 +3,7 @@ import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
-import { StackEntry } from "../domain/stackEntry";
+import { StackEntry, StackCategory } from "../domain/stackEntry";
 import type { DisplayCurrency } from "./settingsStore";
 
 const uid = () => Math.random().toString(36).slice(2) + "-" + Date.now().toString(36);
@@ -32,7 +32,10 @@ type StackState = {
   updateEntry: (
     id: string,
     patch: Partial<
-      Pick<StackEntry, "coinTypeId" | "quantity" | "totalPaid" | "paidCurrency" | "purchasedAt">
+      Pick<
+        StackEntry,
+        "coinTypeId" | "quantity" | "totalPaid" | "paidCurrency" | "purchasedAt" | "category" | "notes"
+      >
     >
   ) => void;
 
@@ -54,6 +57,16 @@ function isDisplayCurrency(x: any): x is DisplayCurrency {
   return x === "USD" || x === "ZAR" || x === "EUR" || x === "GBP";
 }
 
+function isStackCategory(x: any): x is StackCategory {
+  return (
+    x === "bullion" ||
+    x === "collector" ||
+    x === "jewellery" ||
+    x === "scrap" ||
+    x === "other"
+  );
+}
+
 function normalizeEntry(raw: any): StackEntry {
   const coinTypeId = String(raw?.coinTypeId ?? "");
   const quantity = Number(raw?.quantity ?? 0);
@@ -68,10 +81,15 @@ function normalizeEntry(raw: any): StackEntry {
     ? raw.paidCurrency
     : "ZAR";
 
+  // ✅ category (default other for old backups)
+  const category: StackCategory = isStackCategory(raw?.category) ? raw.category : "other";
+
   if (!coinTypeId) throw new Error("coinTypeId missing");
   if (!Number.isFinite(quantity) || quantity <= 0) throw new Error("quantity invalid");
   if (!Number.isFinite(totalPaid) || totalPaid < 0) throw new Error("totalPaid invalid");
   if (!Number.isFinite(purchasedAt) || purchasedAt <= 0) throw new Error("purchasedAt invalid");
+
+  const notes = typeof raw?.notes === "string" ? raw.notes : undefined;
 
   const e: StackEntry = {
     id,
@@ -79,9 +97,10 @@ function normalizeEntry(raw: any): StackEntry {
     quantity,
     totalPaid,
     paidCurrency,
+    category,
     purchasedAt,
     createdAt,
-    notes: typeof raw?.notes === "string" ? raw.notes : undefined,
+    notes,
   };
 
   return e;
@@ -165,7 +184,7 @@ export const useStackStore = create<StackState>()(
     {
       name: "stackd:stack",
       storage: createJSONStorage(() => AsyncStorage),
-      version: 4,
+      version: 5,
 
       migrate: (persistedState: any, version) => {
         const entries = coerceEntries(persistedState);
@@ -176,13 +195,35 @@ export const useStackStore = create<StackState>()(
             ...e,
             paidCurrency: isDisplayCurrency(e?.paidCurrency) ? e.paidCurrency : "ZAR",
           }));
+
+          // and then fall through to v5 normalization below via normalize step
+          const normalized = upgraded.map((e: any) => ({
+            ...e,
+            category: isStackCategory(e?.category) ? e.category : "other",
+            notes: typeof e?.notes === "string" ? e.notes : undefined,
+          }));
+
+          return { entries: normalized };
+        }
+
+        // v4 -> v5: add category default
+        if (version < 5) {
+          const upgraded = entries.map((e: any) => ({
+            ...e,
+            paidCurrency: isDisplayCurrency(e?.paidCurrency) ? e.paidCurrency : "ZAR",
+            category: isStackCategory(e?.category) ? e.category : "other",
+            notes: typeof e?.notes === "string" ? e.notes : undefined,
+          }));
+
           return { entries: upgraded };
         }
 
-        // Even on v4+, normalize defensive (handles odd persisted shapes)
+        // Even on v5+, normalize defensive (handles odd persisted shapes)
         const normalized = entries.map((e: any) => ({
           ...e,
           paidCurrency: isDisplayCurrency(e?.paidCurrency) ? e.paidCurrency : "ZAR",
+          category: isStackCategory(e?.category) ? e.category : "other",
+          notes: typeof e?.notes === "string" ? e.notes : undefined,
         }));
 
         return { entries: normalized };

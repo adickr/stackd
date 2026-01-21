@@ -45,12 +45,18 @@ type PersistedAccount = {
 };
 
 type AccountState = {
-  // state
+  // connection
   isConnected: boolean;
   walletAddressB64: string | null;
   walletAddressB58: string | null;
   authToken: string | null;
   cluster: Cluster;
+
+  // credits
+  credits: number | null;
+  creditsLoading: boolean;
+  creditsError: string | null;
+  refreshCredits: () => Promise<void>;
 
   // actions
   connect: () => Promise<void>;
@@ -58,8 +64,8 @@ type AccountState = {
   disconnect: () => Promise<void>;
 
   // signing
-  signMessages: (messages: string[]) => Promise<string[]>; // base64 signatures
-  signMessage: (message: string) => Promise<string>;       // base64 signature
+  signMessages: (messages: string[]) => Promise<string[]>;
+  signMessage: (message: string) => Promise<string>;
 };
 
 export const useAccountStore = create<AccountState>()(
@@ -70,6 +76,69 @@ export const useAccountStore = create<AccountState>()(
       walletAddressB58: null,
       authToken: null,
       cluster: "solana:mainnet",
+
+      // credits state
+      credits: null,
+      creditsLoading: false,
+      creditsError: null,
+
+      refreshCredits: async () => {
+        const walletAddress = get().walletAddressB58;
+        if (!walletAddress) {
+          set({
+            credits: null,
+            creditsLoading: false,
+            creditsError: "NO_WALLET",
+          });
+          return;
+        }
+
+        set({ creditsLoading: true, creditsError: null });
+
+        try {
+          const baseUrl =
+            (process.env.EXPO_PUBLIC_RELAY_URL as string | undefined) ??
+            (process.env.EXPO_PUBLIC_RELAY_BASE_URL as string | undefined) ??
+            "http://localhost:8787";
+
+          const url = `${baseUrl.replace(/\/$/, "")}/v1/credits/balance?walletAddress=${encodeURIComponent(
+            walletAddress
+          )}`;
+
+          console.log("[credits] fetching", url);
+
+          const res = await fetch(url);
+
+          if (!res.ok) {
+            const text = await res.text().catch(() => "");
+            throw new Error(`CREDITS_HTTP_${res.status}${text ? `: ${text}` : ""}`);
+          }
+
+          const json: any = await res.json().catch(() => null);
+          const balance =
+            typeof json?.balance === "number"
+              ? json.balance
+              : typeof json?.credits === "number"
+                ? json.credits
+                : typeof json?.remaining === "number"
+                  ? json.remaining
+                  : null;
+
+          if (balance === null) throw new Error("CREDITS_BAD_RESPONSE");
+
+          set({
+            credits: balance,
+            creditsLoading: false,
+            creditsError: null,
+          });
+        } catch (err: any) {
+          console.warn("[credits] refresh failed", err);
+          set({
+            creditsLoading: false,
+            creditsError: err?.message ?? "CREDITS_UNKNOWN",
+          });
+        }
+      },
 
       connect: async () => {
         try {
@@ -94,6 +163,8 @@ export const useAccountStore = create<AccountState>()(
             walletAddressB58: result.addressB58,
             authToken: result.authToken,
           });
+
+          get().refreshCredits().catch(() => undefined);
         } catch (err) {
           if (isUserCancelled(err)) {
             console.log("[MWA] connect cancelled by user");
@@ -135,6 +206,7 @@ export const useAccountStore = create<AccountState>()(
             authToken: result.authToken,
           });
 
+          get().refreshCredits().catch(() => undefined);
           return true;
         } catch {
           set({
@@ -163,6 +235,9 @@ export const useAccountStore = create<AccountState>()(
             walletAddressB64: null,
             walletAddressB58: null,
             authToken: null,
+            credits: null,
+            creditsLoading: false,
+            creditsError: null,
           });
         }
       },
@@ -182,7 +257,8 @@ export const useAccountStore = create<AccountState>()(
               auth_token: authToken ?? undefined,
             });
 
-            const addressB64 = walletAddressB64 ?? auth.accounts?.[0]?.address ?? null;
+            const addressB64 =
+              walletAddressB64 ?? auth.accounts?.[0]?.address ?? null;
             if (!addressB64) throw new Error("No wallet address available");
 
             const payloads = messages.map(utf8ToBytes);

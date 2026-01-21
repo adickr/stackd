@@ -9,10 +9,13 @@ import type { DisplayCurrency } from "./settingsStore";
 // ✅ These should match what fetchSilverPerOz supports.
 const SUPPORTED_CURRENCIES: DisplayCurrency[] = ["USD", "ZAR", "EUR", "GBP"];
 
+// Troy ounce -> grams
+const TROY_OZ_TO_G = 31.1034768;
+
 export type SpotHistoryPoint = {
   t: number; // day start (ms)
 
-  // keep existing fields for your chart/backwards compat
+  // backwards compat
   zarPerOz: number;
   usdPerOz: number;
 
@@ -24,8 +27,11 @@ type SpotState = {
   silverZarPerOz: number;
   silverUsdPerOz: number;
 
-  // generalized map: currency -> perOz (MUST be numbers only)
+  // generalized map: currency -> perOz
   silverPerOzByCurrency: Record<string, number>;
+
+  // ✅ NEW: currency -> perGram
+  silverPerGramByCurrency: Record<string, number>;
 
   fetchedAt: number | null;
   isLoading: boolean;
@@ -71,9 +77,8 @@ function normalizeError(err: unknown) {
 
 /**
  * 🛡️ Ensure persisted or incoming maps only contain finite positive numbers.
- * This prevents the exact TS/runtime issue you hit (objects ending up in the map).
  */
-function sanitizePerOzMap(input: unknown): Record<string, number> {
+function sanitizeNumMap(input: unknown): Record<string, number> {
   const out: Record<string, number> = {};
   if (!input || typeof input !== "object") return out;
 
@@ -92,7 +97,7 @@ function sanitizeHistory(input: unknown): SpotHistoryPoint[] {
     const t = Number((raw as any)?.t ?? 0);
     const usdPerOz = Number((raw as any)?.usdPerOz ?? 0);
     const zarPerOz = Number((raw as any)?.zarPerOz ?? 0);
-    const by = sanitizePerOzMap((raw as any)?.by);
+    const by = sanitizeNumMap((raw as any)?.by);
 
     if (!Number.isFinite(t) || t <= 0) continue;
 
@@ -104,10 +109,14 @@ function sanitizeHistory(input: unknown): SpotHistoryPoint[] {
     });
   }
 
-  // Ensure sorted and capped
   out.sort((a, b) => a.t - b.t);
   const MAX = 365;
   return out.length > MAX ? out.slice(out.length - MAX) : out;
+}
+
+function perOzToPerGram(perOz: number) {
+  if (!Number.isFinite(perOz) || perOz <= 0) return 0;
+  return perOz / TROY_OZ_TO_G;
 }
 
 export const useSpotStore = create<SpotState>()(
@@ -115,7 +124,9 @@ export const useSpotStore = create<SpotState>()(
     (set, get) => ({
       silverZarPerOz: 0,
       silverUsdPerOz: 0,
+
       silverPerOzByCurrency: {},
+      silverPerGramByCurrency: {},
 
       fetchedAt: null,
       isLoading: false,
@@ -136,32 +147,38 @@ export const useSpotStore = create<SpotState>()(
             })
           );
 
-          const map: Record<string, number> = {};
+          const mapPerOz: Record<string, number> = {};
+          const mapPerG: Record<string, number> = {};
           let fetchedAt = 0;
 
           for (const r of results) {
-            // defensive: only store good numbers
             if (Number.isFinite(r.perOz) && r.perOz > 0) {
-              map[r.c] = r.perOz;
+              mapPerOz[r.c] = r.perOz;
+
+              const pg = perOzToPerGram(r.perOz);
+              if (Number.isFinite(pg) && pg > 0) mapPerG[r.c] = pg;
             }
             fetchedAt = Math.max(fetchedAt, r.fetchedAt || 0);
           }
 
           const today = dayStart(Date.now());
 
-          // Keep old fields populated for existing UI
-          const usd = map["USD"] ?? get().silverUsdPerOz;
-          const zar = map["ZAR"] ?? get().silverZarPerOz;
+          const usd = mapPerOz["USD"] ?? get().silverUsdPerOz;
+          const zar = mapPerOz["ZAR"] ?? get().silverZarPerOz;
 
           set((state) => {
-            const prevClean = sanitizePerOzMap(state.silverPerOzByCurrency);
-            const nextMap = { ...prevClean, ...map };
+            const prevOz = sanitizeNumMap(state.silverPerOzByCurrency);
+            const prevG = sanitizeNumMap(state.silverPerGramByCurrency);
+
+            const nextOz = { ...prevOz, ...mapPerOz };
+            const nextG = { ...prevG, ...mapPerG };
 
             return {
               ...state,
               silverUsdPerOz: usd,
               silverZarPerOz: zar,
-              silverPerOzByCurrency: nextMap,
+              silverPerOzByCurrency: nextOz,
+              silverPerGramByCurrency: nextG,
               fetchedAt: fetchedAt || state.fetchedAt,
               isLoading: false,
               error: null,
@@ -169,7 +186,7 @@ export const useSpotStore = create<SpotState>()(
                 t: today,
                 usdPerOz: usd,
                 zarPerOz: zar,
-                by: map,
+                by: mapPerOz,
               }),
             };
           });
@@ -182,22 +199,32 @@ export const useSpotStore = create<SpotState>()(
     {
       name: "spot-store",
       storage: createJSONStorage(() => AsyncStorage),
-      version: 2,
+      version: 3,
       migrate: (persisted: any) => {
-        // sanitize any old/bad persisted values
-        const silverPerOzByCurrency = sanitizePerOzMap(
-          persisted?.silverPerOzByCurrency
-        );
+        const silverPerOzByCurrency = sanitizeNumMap(persisted?.silverPerOzByCurrency);
+        const silverPerGramByCurrency = sanitizeNumMap(persisted?.silverPerGramByCurrency);
+
         const history = sanitizeHistory(persisted?.history);
 
         const silverUsdPerOz = Number(persisted?.silverUsdPerOz ?? 0);
         const silverZarPerOz = Number(persisted?.silverZarPerOz ?? 0);
         const fetchedAt = persisted?.fetchedAt ?? null;
 
+        // Backfill per-gram map from per-oz if missing (one-time)
+        const nextPerGram =
+          Object.keys(silverPerGramByCurrency).length > 0
+            ? silverPerGramByCurrency
+            : Object.fromEntries(
+                Object.entries(silverPerOzByCurrency)
+                  .map(([k, v]) => [k, perOzToPerGram(v)])
+                  .filter(([, v]) => typeof v === "number" && v > 0)
+              );
+
         return {
           silverUsdPerOz: Number.isFinite(silverUsdPerOz) ? silverUsdPerOz : 0,
           silverZarPerOz: Number.isFinite(silverZarPerOz) ? silverZarPerOz : 0,
           silverPerOzByCurrency,
+          silverPerGramByCurrency: nextPerGram,
           fetchedAt: typeof fetchedAt === "number" ? fetchedAt : null,
           history,
         };
@@ -206,6 +233,7 @@ export const useSpotStore = create<SpotState>()(
         silverZarPerOz: s.silverZarPerOz,
         silverUsdPerOz: s.silverUsdPerOz,
         silverPerOzByCurrency: s.silverPerOzByCurrency,
+        silverPerGramByCurrency: s.silverPerGramByCurrency,
         fetchedAt: s.fetchedAt,
         history: s.history,
       }),

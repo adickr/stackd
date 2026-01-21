@@ -17,6 +17,7 @@ import { useCoinStore } from "../src/stores/coinStore";
 import { useSpotStore } from "../src/stores/spotStore";
 import { useSettingsStore } from "../src/stores/settingsStore";
 import type { DisplayCurrency } from "../src/stores/settingsStore";
+import type { StackCategory } from "../src/domain/stackEntry";
 
 import { MyStackConviction } from "../src/components/MyStackConviction";
 
@@ -84,23 +85,25 @@ function monthTitle(ms: number) {
 }
 
 type PnlMeta = {
-  ok: boolean;
+  pctOk: boolean;
   pct: number;
   amount: number;
   kind: "up" | "down" | "flat";
 };
 
 function computePnl(paidDisplay: number, currentValue: number): PnlMeta {
-  if (!Number.isFinite(paidDisplay) || paidDisplay <= 0) {
-    return { ok: false, pct: 0, amount: 0, kind: "flat" };
-  }
-  const amount = currentValue - paidDisplay;
-  const pct = (amount / paidDisplay) * 100;
+  const paid = Number.isFinite(paidDisplay) ? paidDisplay : 0;
+  const cur = Number.isFinite(currentValue) ? currentValue : 0;
+
+  const amount = cur - paid;
+
+  const pctOk = paid > 0;
+  const pct = pctOk ? (amount / paid) * 100 : 0;
 
   const eps = 0.001;
   const kind: PnlMeta["kind"] = amount > eps ? "up" : amount < -eps ? "down" : "flat";
 
-  return { ok: true, pct, amount, kind };
+  return { pctOk, pct, amount, kind };
 }
 
 function formatPct(pct: number) {
@@ -120,6 +123,8 @@ type TimelineRowItem = {
   paidCurrency: DisplayCurrency;
   purchasedAt: number;
   fineOz: number;
+  isGift: boolean;
+  category: StackCategory;
 };
 
 type TimelineSection = {
@@ -137,8 +142,23 @@ function impliedFx(
   if (from === to) return 1;
   const fromPerOz = perOzByCurrency?.[from] ?? 0;
   const toPerOz = perOzByCurrency?.[to] ?? 0;
-  if (fromPerOz > 0 && toPerOz > 0) return toPerOz / fromPerOz; // (to per oz) / (from per oz)
+  if (fromPerOz > 0 && toPerOz > 0) return toPerOz / fromPerOz;
   return 0;
+}
+
+function categoryLabel(cat: StackCategory) {
+  switch (cat) {
+    case "bullion":
+      return "Bullion";
+    case "collector":
+      return "Collector";
+    case "jewellery":
+      return "Jewellery";
+    case "scrap":
+      return "Scrap";
+    default:
+      return "Other";
+  }
 }
 
 function TimelineRow({
@@ -163,7 +183,6 @@ function TimelineRow({
   const currentValue =
     spotPerOzDisplay > 0 && fineOz > 0 ? fineOz * spotPerOzDisplay : 0;
 
-  // Convert paidCurrency -> displayCurrency using implied FX from spot map
   const fx = impliedFx(item.paidCurrency, displayCurrency, perOzByCurrency);
   const paidDisplay =
     fx > 0 && Number.isFinite(item.totalPaid) ? item.totalPaid * fx : 0;
@@ -176,14 +195,15 @@ function TimelineRow({
   const pnlIcon =
     pnl.kind === "up" ? "arrow-up" : pnl.kind === "down" ? "arrow-down" : "remove";
 
+  // For gifts: still show arrow direction, but don’t treat as % PnL
+  const showGift = item.isGift === true;
+
   const iconColor =
-    pnl.ok
-      ? pnl.kind === "up"
-        ? "#008C46"
-        : pnl.kind === "down"
-          ? "#C83232"
-          : "#666"
-      : "#666";
+    pnl.kind === "up"
+      ? "#008C46"
+      : pnl.kind === "down"
+        ? "#C83232"
+        : "#666";
 
   return (
     <Pressable
@@ -198,7 +218,12 @@ function TimelineRow({
 
       <View style={styles.timelineCard}>
         <View style={styles.timelineTop}>
-          <Text style={styles.purchaseTitle}>{item.coinName}</Text>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm, flex: 1 }}>
+            <Text style={styles.purchaseTitle} numberOfLines={1}>
+              {item.coinName}
+            </Text>
+          </View>
+
           <Ionicons
             name="chevron-forward"
             size={18}
@@ -208,27 +233,48 @@ function TimelineRow({
         </View>
 
         <Text style={styles.purchaseSub}>
-          {ymd(item.purchasedAt)} • Qty {item.quantity} • {fineOz.toFixed(2)} oz
+          {ymd(item.purchasedAt)} • Qty {item.quantity} • {fineOz.toFixed(2)} oz •{" "}
+          {categoryLabel(item.category)}
         </Text>
 
         <Text style={styles.purchaseSub}>
-          Paid: {formatMoney(item.totalPaid, item.paidCurrency, 0)}
+          Paid:{" "}
+          {showGift ? "Gift" : formatMoney(item.totalPaid, item.paidCurrency, 0)}
           {"  "}• Current:{" "}
           {spotPerOzDisplay > 0 ? formatMoney(currentValue, displayCurrency, 0) : "—"}
         </Text>
 
-        <View style={styles.pnlRow}>
-          <Ionicons
-            name={pnl.ok ? (pnlIcon as any) : "remove"}
-            size={14}
-            color={iconColor}
-            style={{ opacity: 0.95 }}
-          />
-          <Text style={[styles.pnlText, pnl.ok ? pnlColor : styles.pnlFlat]}>
-            {pnl.ok
-              ? `${formatPct(pnl.pct)} (${formatMoney(pnl.amount, displayCurrency, 0)})`
-              : "PnL: —"}
-          </Text>
+        {/* bottom meta row: Gift chip (left) + PnL (right) */}
+        <View style={styles.bottomMetaRow}>
+          {showGift ? (
+            <View style={styles.giftPill}>
+              <Ionicons
+                name="gift-outline"
+                size={12}
+                color={colors.ink}
+                style={{ opacity: 0.75 }}
+              />
+              <Text style={styles.giftPillText}>Gift</Text>
+            </View>
+          ) : (
+            <View />
+          )}
+
+          <View style={styles.pnlRow}>
+            <Ionicons
+              name={pnlIcon as any}
+              size={14}
+              color={iconColor}
+              style={{ opacity: 0.95 }}
+            />
+            <Text style={[styles.pnlText, pnlColor]}>
+              {showGift
+                ? formatMoney(pnl.amount, displayCurrency, 0)
+                : pnl.pctOk
+                  ? `${formatPct(pnl.pct)} (${formatMoney(pnl.amount, displayCurrency, 0)})`
+                  : "PnL: —"}
+            </Text>
+          </View>
         </View>
       </View>
     </Pressable>
@@ -255,13 +301,19 @@ export default function HomeScreen() {
   const spotError = useSpotStore((s) => s.error);
   const clearSpotError = useSpotStore((s) => s.clearError);
 
-  // works with your updated store
+  // per-oz spot (value pipeline uses oz)
   const perOzByCurrency = useSpotStore((s) => s.silverPerOzByCurrency ?? {});
+  // ✅ per-gram spot (display only, when unit = g)
+  const perGramByCurrency = useSpotStore((s) => (s as any).silverPerGramByCurrency ?? {});
+
   const fallbackZar = useSpotStore((s) => s.silverZarPerOz);
   const fallbackUsd = useSpotStore((s) => s.silverUsdPerOz);
 
   const [showPurchases, setShowPurchases] = useState(false);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+
+  // ✅ new: collapse “My Stack” by default
+  const [positionsOpen, setPositionsOpen] = useState(false);
   const [showAllStack, setShowAllStack] = useState(false);
 
   useEffect(() => {
@@ -280,9 +332,10 @@ export default function HomeScreen() {
     setVisibleCount((v) => Math.min(Math.max(PAGE_SIZE, v), entries.length || PAGE_SIZE));
   }, [entries.length]);
 
+  // if positions panel closes, also collapse “show all”
   useEffect(() => {
-    if (showAllStack && entries.length === 0) setShowAllStack(false);
-  }, [showAllStack, entries.length]);
+    if (!positionsOpen) setShowAllStack(false);
+  }, [positionsOpen]);
 
   const fineOzByCoinId = useMemo(() => {
     const map: Record<string, number> = {};
@@ -299,19 +352,34 @@ export default function HomeScreen() {
     );
   }, [entries, fineOzByCoinId]);
 
-  const spotDisplay = useMemo(() => {
+  // ✅ per-oz spot for valuation + pnl
+  const spotPerOzDisplay = useMemo(() => {
     const fromMap = perOzByCurrency?.[currency];
     if (typeof fromMap === "number" && fromMap > 0) return fromMap;
 
-    // fallback if store hasn't refreshed yet
     if (currency === "ZAR") return fallbackZar;
     if (currency === "USD") return fallbackUsd;
     return 0;
   }, [perOzByCurrency, currency, fallbackZar, fallbackUsd]);
 
-  const portfolioValue = spotDisplay > 0 ? totalOz * spotDisplay : 0;
+  // ✅ per-unit spot shown in hero (/oz or /g)
+  const spotPerUnitDisplay = useMemo(() => {
+    if (unit === "g") {
+      const fromMap = perGramByCurrency?.[currency];
+      if (typeof fromMap === "number" && fromMap > 0) return fromMap;
 
-  // convert each entry's paid -> display using implied FX
+      // fallback: derive from per-oz if per-gram missing
+      if (spotPerOzDisplay > 0) return spotPerOzDisplay / TROY_OZ_GRAMS;
+      return 0;
+    }
+
+    return spotPerOzDisplay;
+  }, [unit, perGramByCurrency, currency, spotPerOzDisplay]);
+
+  const portfolioValue = spotPerOzDisplay > 0 ? totalOz * spotPerOzDisplay : 0;
+
+  const hasAnyPaid = useMemo(() => entries.some((e) => Number(e.totalPaid ?? 0) > 0), [entries]);
+
   const totalPaidDisplay = useMemo(() => {
     if (!entries.length) return 0;
 
@@ -361,7 +429,36 @@ export default function HomeScreen() {
   }, [allStackRows, showAllStack]);
 
   const hiddenStackCount = Math.max(0, allStackRows.length - STACK_TOP_N);
-  const canExpandStack = !showAllStack && hiddenStackCount > 0;
+  const canExpandStack = positionsOpen && !showAllStack && hiddenStackCount > 0;
+
+  const categoryTotals = useMemo(() => {
+    const order: StackCategory[] = ["bullion", "collector", "jewellery", "scrap", "other"];
+    const byCat: Record<StackCategory, number> = {
+      bullion: 0,
+      collector: 0,
+      jewellery: 0,
+      scrap: 0,
+      other: 0,
+    };
+
+    for (const e of entries) {
+      const cat = (e as any).category ?? "other";
+      const safeCat: StackCategory =
+        cat === "bullion" || cat === "collector" || cat === "jewellery" || cat === "scrap" || cat === "other"
+          ? cat
+          : "other";
+
+      byCat[safeCat] += e.quantity * (fineOzByCoinId[e.coinTypeId] ?? 0);
+    }
+
+    return order
+      .map((cat) => {
+        const oz = byCat[cat] ?? 0;
+        const value = spotPerOzDisplay > 0 ? oz * spotPerOzDisplay : 0;
+        return { cat, oz, value };
+      })
+      .filter((r) => Number.isFinite(r.oz) && r.oz > 0);
+  }, [entries, fineOzByCoinId, spotPerOzDisplay]);
 
   const purchaseRows = useMemo<TimelineRowItem[]>(() => {
     return entries
@@ -372,14 +469,28 @@ export default function HomeScreen() {
         const fineOzPerUnit = fineOzByCoinId[e.coinTypeId] ?? 0;
         const fineOz = e.quantity * fineOzPerUnit;
 
+        const totalPaid = Number(e.totalPaid ?? 0);
+        const isGift = Number.isFinite(totalPaid) && totalPaid === 0;
+
+        const category: StackCategory =
+          (e as any).category === "bullion" ||
+          (e as any).category === "collector" ||
+          (e as any).category === "jewellery" ||
+          (e as any).category === "scrap" ||
+          (e as any).category === "other"
+            ? (e as any).category
+            : "other";
+
         return {
           id: e.id,
           coinName: coin?.name ?? "Unknown coin",
           quantity: e.quantity,
-          totalPaid: e.totalPaid,
+          totalPaid,
           paidCurrency: (e as any).paidCurrency ?? "ZAR",
           purchasedAt: e.purchasedAt,
           fineOz,
+          isGift,
+          category,
         };
       });
   }, [entries, getCoin, fineOzByCoinId]);
@@ -450,10 +561,10 @@ export default function HomeScreen() {
 
           <View style={styles.heroPnlRow}>
             <Ionicons
-              name={portfolioPnl.ok ? (portfolioPnlIcon as any) : "remove"}
+              name={portfolioPnl.pctOk ? (portfolioPnlIcon as any) : "remove"}
               size={14}
               color={
-                portfolioPnl.ok
+                portfolioPnl.pctOk
                   ? portfolioPnl.kind === "up"
                     ? "#008C46"
                     : portfolioPnl.kind === "down"
@@ -463,16 +574,23 @@ export default function HomeScreen() {
               }
               style={{ opacity: 0.95 }}
             />
-            <Text style={[styles.heroPnlText, portfolioPnl.ok ? portfolioPnlColor : styles.pnlFlat]}>
-              {portfolioPnl.ok
-                ? `${formatPct(portfolioPnl.pct)} (${formatMoney(portfolioPnl.amount, currency, 0)})`
-                : "PnL: —"}
+            <Text style={[styles.heroPnlText, portfolioPnl.pctOk ? portfolioPnlColor : styles.pnlFlat]}>
+              {!hasAnyPaid && portfolioValue > 0 ? (
+                `Gift (${formatMoney(portfolioValue, currency, 0)})`
+              ) : portfolioPnl.pctOk ? (
+                `${formatPct(portfolioPnl.pct)} (${formatMoney(portfolioPnl.amount, currency, 0)})`
+              ) : (
+                "PnL: —"
+              )}
             </Text>
           </View>
 
           <Text style={styles.heroSub}>
-            {formatWeight(totalOz, unit)} • {formatSpot(spotDisplay, currency)}/oz •{" "}
-            {fetchedAt ? "updated" : "pull to refresh"}
+            {formatWeight(totalOz, unit)} •{" "}
+            {spotPerUnitDisplay > 0
+              ? `${formatSpot(spotPerUnitDisplay, currency)}/${unit === "g" ? "g" : "oz"}`
+              : "—"}{" "}
+            • {fetchedAt ? "updated" : "pull to refresh"}
           </Text>
 
           {spotError ? (
@@ -491,43 +609,79 @@ export default function HomeScreen() {
           ) : null}
         </View>
 
+        {/* -------- My Stack (compact) -------- */}
         <View style={styles.card}>
           <View style={styles.cardHeaderRow}>
             <Text style={styles.cardTitle}>My Stack</Text>
             <Text style={styles.cardHint}>
-              {allStackRows.length > 0
-                ? showAllStack
-                  ? `${allStackRows.length} positions`
-                  : `Top ${Math.min(STACK_TOP_N, allStackRows.length)}`
-                : "—"}
+              {allStackRows.length > 0 ? `${allStackRows.length} positions` : "—"}
             </Text>
           </View>
 
-          <View style={{ marginTop: spacing.lg }}>
-            <MyStackConviction unit={unit} slices={visibleStackRows} />
-          </View>
+          {/* categories promoted to top */}
+          {categoryTotals.length > 0 ? (
+            <View style={styles.categoryWrapCompact}>
+              {categoryTotals.map((r) => (
+                <View key={r.cat} style={styles.categoryRow}>
+                  <Text style={styles.categoryLabel}>{categoryLabel(r.cat)}</Text>
+                  <Text style={styles.categoryValue}>
+                    {formatWeight(r.oz, unit)}
+                    {"  "}•{"  "}
+                    {spotPerOzDisplay > 0 ? formatMoney(r.value, currency, 0) : "—"}
+                  </Text>
+                </View>
+              ))}
+            </View>
+          ) : (
+            <Text style={[styles.categoryValue, { marginTop: spacing.md }]}>No positions yet.</Text>
+          )}
 
-          {canExpandStack ? (
-            <Pressable
-              onPress={() => setShowAllStack(true)}
-              style={({ pressed }) => [styles.expandBtn, pressed && { opacity: 0.9 }]}
-            >
-              <Text style={styles.expandText}>+ {hiddenStackCount} smaller positions</Text>
-              <Ionicons name="chevron-down" size={18} color={colors.ink} style={{ opacity: 0.55 }} />
-            </Pressable>
-          ) : null}
+          <Pressable
+            onPress={() => setPositionsOpen((v) => !v)}
+            style={({ pressed }) => [
+              styles.viewPositionsBtn,
+              pressed && { opacity: 0.9 },
+            ]}
+          >
+            <Text style={styles.viewPositionsText}>
+              {positionsOpen ? "Hide positions" : "View positions"}
+            </Text>
+            <Ionicons
+              name={positionsOpen ? "chevron-up" : "chevron-down"}
+              size={18}
+              color={colors.ink}
+              style={{ opacity: 0.55 }}
+            />
+          </Pressable>
 
-          {showAllStack && allStackRows.length > STACK_TOP_N ? (
-            <Pressable
-              onPress={() => setShowAllStack(false)}
-              style={({ pressed }) => [styles.expandBtn, pressed && { opacity: 0.9 }]}
-            >
-              <Text style={styles.expandText}>Show top only</Text>
-              <Ionicons name="chevron-up" size={18} color={colors.ink} style={{ opacity: 0.55 }} />
-            </Pressable>
+          {positionsOpen ? (
+            <View style={{ marginTop: spacing.lg }}>
+              <MyStackConviction unit={unit} slices={visibleStackRows} />
+
+              {canExpandStack ? (
+                <Pressable
+                  onPress={() => setShowAllStack(true)}
+                  style={({ pressed }) => [styles.expandBtn, pressed && { opacity: 0.9 }]}
+                >
+                  <Text style={styles.expandText}>+ {hiddenStackCount} smaller positions</Text>
+                  <Ionicons name="chevron-down" size={18} color={colors.ink} style={{ opacity: 0.55 }} />
+                </Pressable>
+              ) : null}
+
+              {showAllStack && allStackRows.length > STACK_TOP_N ? (
+                <Pressable
+                  onPress={() => setShowAllStack(false)}
+                  style={({ pressed }) => [styles.expandBtn, pressed && { opacity: 0.9 }]}
+                >
+                  <Text style={styles.expandText}>Show top only</Text>
+                  <Ionicons name="chevron-up" size={18} color={colors.ink} style={{ opacity: 0.55 }} />
+                </Pressable>
+              ) : null}
+            </View>
           ) : null}
         </View>
 
+        {/* -------- Purchase history -------- */}
         {purchaseRows.length > 0 ? (
           <View style={styles.card}>
             <View style={styles.cardHeaderRow}>
@@ -563,7 +717,7 @@ export default function HomeScreen() {
                           item={p}
                           isFirst={idx === 0}
                           isLast={idx === section.items.length - 1}
-                          spotPerOzDisplay={spotDisplay}
+                          spotPerOzDisplay={spotPerOzDisplay}
                           perOzByCurrency={perOzByCurrency}
                           displayCurrency={currency}
                           onPress={() => router.push(`/stack/add?entryId=${encodeURIComponent(p.id)}`)}
@@ -674,6 +828,33 @@ const styles = StyleSheet.create({
   cardTitle: { ...text.label, color: colors.inkSoft },
   cardHint: { ...text.hint, color: colors.inkSoft },
 
+  categoryWrapCompact: {
+    marginTop: spacing.md,
+    gap: spacing.sm,
+  },
+  categoryRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "baseline",
+    gap: spacing.md,
+  },
+  categoryLabel: { ...text.label, color: colors.inkSoft },
+  categoryValue: { ...text.hint, color: colors.inkMuted, textAlign: "right" },
+
+  viewPositionsBtn: {
+    marginTop: spacing.lg,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.lg,
+    borderRadius: radius.md,
+    backgroundColor: "rgba(255,255,255,0.62)",
+    borderWidth: 1,
+    borderColor: "rgba(0,0,0,0.06)",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  viewPositionsText: { ...text.label, color: colors.inkSoft },
+
   expandBtn: {
     marginTop: spacing.lg,
     paddingVertical: spacing.md,
@@ -745,8 +926,28 @@ const styles = StyleSheet.create({
   purchaseTitle: { ...text.titleM, fontSize: 14, color: colors.ink },
   purchaseSub: { ...text.body, fontSize: 12, color: colors.inkMuted },
 
+  bottomMetaRow: {
+    marginTop: 6,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.md,
+  },
+
+  giftPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.78)",
+    borderWidth: 1,
+    borderColor: "rgba(0,0,0,0.06)",
+  },
+  giftPillText: { ...text.label, color: colors.inkSoft, opacity: 0.9 },
+
   pnlRow: {
-    marginTop: 4,
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
