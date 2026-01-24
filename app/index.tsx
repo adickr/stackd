@@ -1,5 +1,5 @@
 // app/index.tsx
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -7,7 +7,10 @@ import {
   ScrollView,
   RefreshControl,
   StyleSheet,
+  useWindowDimensions,
+  Image,
 } from "react-native";
+
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -25,6 +28,9 @@ import { MyStackConviction } from "../src/components/MyStackConviction";
 import { formatMoney, formatSpot } from "../src/utils/money";
 
 import { colors, spacing, radius, text } from "../src/theme/tokens";
+
+// ✅ add (adjust path if your assets folder differs)
+const stackdLogo = require("../assets/images/stackd-logo-2.png");
 
 const TROY_OZ_GRAMS = 31.1035;
 const PAGE_SIZE = 10;
@@ -82,6 +88,28 @@ function monthKey(ms: number) {
 
 function monthTitle(ms: number) {
   return new Date(ms).toLocaleString(undefined, { month: "long", year: "numeric" });
+}
+
+// ✅ Option A: time-ago for fetchedAt
+function timeAgo(ms?: number) {
+  if (!ms) return "";
+  const diff = Date.now() - ms;
+
+  if (!Number.isFinite(diff)) return "";
+  if (diff < 0) return "just now";
+
+  const s = Math.floor(diff / 1000);
+  if (s < 10) return "just now";
+  if (s < 60) return `${s}s ago`;
+
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+
+  const d = Math.floor(h / 24);
+  return `${d}d ago`;
 }
 
 type PnlMeta = {
@@ -180,30 +208,26 @@ function TimelineRow({
 }) {
   const fineOz = Number.isFinite(item.fineOz) ? item.fineOz : 0;
 
-  const currentValue =
-    spotPerOzDisplay > 0 && fineOz > 0 ? fineOz * spotPerOzDisplay : 0;
+  const currentValue = spotPerOzDisplay > 0 && fineOz > 0 ? fineOz * spotPerOzDisplay : 0;
 
   const fx = impliedFx(item.paidCurrency, displayCurrency, perOzByCurrency);
-  const paidDisplay =
-    fx > 0 && Number.isFinite(item.totalPaid) ? item.totalPaid * fx : 0;
+  const paidDisplay = fx > 0 && Number.isFinite(item.totalPaid) ? item.totalPaid * fx : 0;
 
   const pnl = computePnl(paidDisplay, currentValue);
 
   const pnlColor =
-    pnl.kind === "up" ? styles.pnlUp : pnl.kind === "down" ? styles.pnlDown : styles.pnlFlat;
+    pnl.kind === "up"
+      ? styles.pnlUp
+      : pnl.kind === "down"
+        ? styles.pnlDown
+        : styles.pnlFlat;
 
-  const pnlIcon =
-    pnl.kind === "up" ? "arrow-up" : pnl.kind === "down" ? "arrow-down" : "remove";
+  const pnlIcon = pnl.kind === "up" ? "arrow-up" : pnl.kind === "down" ? "arrow-down" : "remove";
 
-  // For gifts: still show arrow direction, but don’t treat as % PnL
   const showGift = item.isGift === true;
 
   const iconColor =
-    pnl.kind === "up"
-      ? "#008C46"
-      : pnl.kind === "down"
-        ? "#C83232"
-        : "#666";
+    pnl.kind === "up" ? "#008C46" : pnl.kind === "down" ? "#C83232" : "#666";
 
   return (
     <Pressable
@@ -224,12 +248,7 @@ function TimelineRow({
             </Text>
           </View>
 
-          <Ionicons
-            name="chevron-forward"
-            size={18}
-            color={colors.ink}
-            style={{ opacity: 0.45 }}
-          />
+          <Ionicons name="chevron-forward" size={18} color={colors.ink} style={{ opacity: 0.45 }} />
         </View>
 
         <Text style={styles.purchaseSub}>
@@ -238,22 +257,15 @@ function TimelineRow({
         </Text>
 
         <Text style={styles.purchaseSub}>
-          Paid:{" "}
-          {showGift ? "Gift" : formatMoney(item.totalPaid, item.paidCurrency, 0)}
+          Paid: {showGift ? "Gift" : formatMoney(item.totalPaid, item.paidCurrency, 0)}
           {"  "}• Current:{" "}
           {spotPerOzDisplay > 0 ? formatMoney(currentValue, displayCurrency, 0) : "—"}
         </Text>
 
-        {/* bottom meta row: Gift chip (left) + PnL (right) */}
         <View style={styles.bottomMetaRow}>
           {showGift ? (
             <View style={styles.giftPill}>
-              <Ionicons
-                name="gift-outline"
-                size={12}
-                color={colors.ink}
-                style={{ opacity: 0.75 }}
-              />
+              <Ionicons name="gift-outline" size={12} color={colors.ink} style={{ opacity: 0.75 }} />
               <Text style={styles.giftPillText}>Gift</Text>
             </View>
           ) : (
@@ -261,12 +273,7 @@ function TimelineRow({
           )}
 
           <View style={styles.pnlRow}>
-            <Ionicons
-              name={pnlIcon as any}
-              size={14}
-              color={iconColor}
-              style={{ opacity: 0.95 }}
-            />
+            <Ionicons name={pnlIcon as any} size={14} color={iconColor} style={{ opacity: 0.95 }} />
             <Text style={[styles.pnlText, pnlColor]}>
               {showGift
                 ? formatMoney(pnl.amount, displayCurrency, 0)
@@ -285,6 +292,7 @@ function TimelineRow({
 
 export default function HomeScreen() {
   const router = useRouter();
+  const { height: viewportH } = useWindowDimensions();
 
   const unit = useSettingsStore((s) => s.unit);
   const currency = useSettingsStore((s) => s.currency);
@@ -309,12 +317,16 @@ export default function HomeScreen() {
   const fallbackZar = useSpotStore((s) => s.silverZarPerOz);
   const fallbackUsd = useSpotStore((s) => s.silverUsdPerOz);
 
-  const [showPurchases, setShowPurchases] = useState(false);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
-  // ✅ new: collapse “My Stack” by default
+  // ✅ collapse “My Stack” by default
   const [positionsOpen, setPositionsOpen] = useState(false);
   const [showAllStack, setShowAllStack] = useState(false);
+
+  // ✅ purchase history "below the fold" + docked nudge
+  const scrollRef = useRef<ScrollView>(null);
+  const purchaseAnchorYRef = useRef<number>(0);
+  const [showPurchaseNudge, setShowPurchaseNudge] = useState(true);
 
   useEffect(() => {
     seedIfEmpty();
@@ -323,10 +335,6 @@ export default function HomeScreen() {
   useEffect(() => {
     if (!fetchedAt) refreshSpot();
   }, [fetchedAt, refreshSpot]);
-
-  useEffect(() => {
-    if (!showPurchases) setVisibleCount(PAGE_SIZE);
-  }, [showPurchases]);
 
   useEffect(() => {
     setVisibleCount((v) => Math.min(Math.max(PAGE_SIZE, v), entries.length || PAGE_SIZE));
@@ -352,7 +360,6 @@ export default function HomeScreen() {
     );
   }, [entries, fineOzByCoinId]);
 
-  // ✅ per-oz spot for valuation + pnl
   const spotPerOzDisplay = useMemo(() => {
     const fromMap = perOzByCurrency?.[currency];
     if (typeof fromMap === "number" && fromMap > 0) return fromMap;
@@ -362,17 +369,14 @@ export default function HomeScreen() {
     return 0;
   }, [perOzByCurrency, currency, fallbackZar, fallbackUsd]);
 
-  // ✅ per-unit spot shown in hero (/oz or /g)
   const spotPerUnitDisplay = useMemo(() => {
     if (unit === "g") {
       const fromMap = perGramByCurrency?.[currency];
       if (typeof fromMap === "number" && fromMap > 0) return fromMap;
 
-      // fallback: derive from per-oz if per-gram missing
       if (spotPerOzDisplay > 0) return spotPerOzDisplay / TROY_OZ_GRAMS;
       return 0;
     }
-
     return spotPerOzDisplay;
   }, [unit, perGramByCurrency, currency, spotPerOzDisplay]);
 
@@ -392,19 +396,54 @@ export default function HomeScreen() {
     return sum;
   }, [entries, currency, perOzByCurrency]);
 
-  const portfolioPnl = useMemo(() => {
-    return computePnl(totalPaidDisplay, portfolioValue);
-  }, [totalPaidDisplay, portfolioValue]);
+  const portfolioPnl = useMemo(() => computePnl(totalPaidDisplay, portfolioValue), [
+    totalPaidDisplay,
+    portfolioValue,
+  ]);
 
   const portfolioPnlColor =
-    portfolioPnl.kind === "up" ? styles.pnlUp : portfolioPnl.kind === "down" ? styles.pnlDown : styles.pnlFlat;
+    portfolioPnl.kind === "up"
+      ? styles.pnlUp
+      : portfolioPnl.kind === "down"
+        ? styles.pnlDown
+        : styles.pnlFlat;
 
   const portfolioPnlIcon =
-    portfolioPnl.kind === "up" ? "arrow-up" : portfolioPnl.kind === "down" ? "arrow-down" : "remove";
+    portfolioPnl.kind === "up"
+      ? "arrow-up"
+      : portfolioPnl.kind === "down"
+        ? "arrow-down"
+        : "remove";
 
   const level = useMemo(() => getStackLevel(totalOz), [totalOz]);
   const nextLevel = useMemo(() => getNextLevel(totalOz), [totalOz]);
-  const ozToNext = nextLevel ? Math.max(0, nextLevel.minOz - totalOz) : 0;
+
+  // progress calc
+  const progressMeta = useMemo(() => {
+    if (!nextLevel) {
+      return {
+        currentMin: level.minOz,
+        nextMin: level.minOz,
+        span: 0,
+        progressedOz: 0,
+        remainingOz: 0,
+        pct: 100,
+        frac: 1,
+      };
+    }
+
+    const currentMin = level.minOz;
+    const nextMin = nextLevel.minOz;
+    const span = Math.max(0, nextMin - currentMin);
+
+    const progressedOz = Math.max(0, totalOz - currentMin);
+    const remainingOz = Math.max(0, nextMin - totalOz);
+
+    const frac = span > 0 ? Math.min(1, Math.max(0, progressedOz / span)) : 1;
+    const pct = Math.round(frac * 100);
+
+    return { currentMin, nextMin, span, progressedOz, remainingOz, pct, frac };
+  }, [level, nextLevel, totalOz]);
 
   const allStackRows = useMemo(() => {
     const byId: Record<string, number> = {};
@@ -444,7 +483,11 @@ export default function HomeScreen() {
     for (const e of entries) {
       const cat = (e as any).category ?? "other";
       const safeCat: StackCategory =
-        cat === "bullion" || cat === "collector" || cat === "jewellery" || cat === "scrap" || cat === "other"
+        cat === "bullion" ||
+        cat === "collector" ||
+        cat === "jewellery" ||
+        cat === "scrap" ||
+        cat === "other"
           ? cat
           : "other";
 
@@ -495,11 +538,15 @@ export default function HomeScreen() {
       });
   }, [entries, getCoin, fineOzByCoinId]);
 
-  const visiblePurchaseRows = showPurchases ? purchaseRows.slice(0, visibleCount) : [];
-  const canLoadMore = showPurchases && visibleCount < purchaseRows.length;
+  // always visible when you scroll down (no toggle). still paginated.
+  const visiblePurchaseRows = useMemo(() => purchaseRows.slice(0, visibleCount), [
+    purchaseRows,
+    visibleCount,
+  ]);
+  const canLoadMore = visibleCount < purchaseRows.length;
 
-  const purchaseSections = useMemo(() => {
-    if (!showPurchases) return [];
+  const purchaseSections = useMemo((): TimelineSection[] => {
+    if (!visiblePurchaseRows.length) return [];
     const map = new Map<string, { ms: number; items: TimelineRowItem[] }>();
 
     for (const p of visiblePurchaseRows) {
@@ -513,198 +560,194 @@ export default function HomeScreen() {
     return Array.from(map.entries())
       .map(([key, v]) => ({ key, title: monthTitle(v.ms), items: v.items }))
       .sort((a, b) => (a.key < b.key ? 1 : -1));
-  }, [showPurchases, visiblePurchaseRows]);
+  }, [visiblePurchaseRows]);
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <ScrollView
+        ref={scrollRef}
         contentContainerStyle={styles.container}
         refreshControl={<RefreshControl refreshing={isLoading} onRefresh={refreshSpot} />}
+        scrollEventThrottle={16}
+        onScroll={(e) => {
+          const y = e.nativeEvent.contentOffset.y;
+          const anchorY = purchaseAnchorYRef.current;
+          if (anchorY > 0) setShowPurchaseNudge(y < anchorY - 80);
+        }}
       >
-        <View style={styles.hero}>
-          <View style={styles.heroHeader}>
-            <Text style={styles.appTitle}>Stackd</Text>
+        {/* -------- "Home page" area (full viewport) -------- */}
+        <View style={{ minHeight: Math.max(0, viewportH - 24) }}>
+          <View style={styles.hero}>
+            <View style={styles.heroHeader}>
+              <Image source={stackdLogo} style={styles.logo} resizeMode="contain" />
 
-            <Pressable
-              onPress={() => router.push("/settings")}
-              style={({ pressed }) => pressed && { opacity: 0.8 }}
-              hitSlop={8}
-            >
-              <Ionicons name="settings-outline" size={22} color={colors.ink} />
-            </Pressable>
-          </View>
-
-          <View style={styles.levelRow}>
-            <View style={styles.levelChip}>
-              <Ionicons
-                name="trophy-outline"
-                size={14}
-                color={colors.ink}
-                style={{ opacity: 0.8 }}
-              />
-              <Text style={styles.levelChipText}>{level.name}</Text>
-            </View>
-
-            {nextLevel ? (
-              <Text style={styles.levelHint}>
-                Next: {nextLevel.name} in{" "}
-                {unit === "g"
-                  ? `${(ozToNext * TROY_OZ_GRAMS).toFixed(0)} g`
-                  : `${ozToNext.toFixed(1)} oz`}
-              </Text>
-            ) : (
-              <Text style={styles.levelHint}>Max level</Text>
-            )}
-          </View>
-
-          <Text style={styles.heroValue}>{formatMoney(portfolioValue, currency, 0)}</Text>
-
-          <View style={styles.heroPnlRow}>
-            <Ionicons
-              name={portfolioPnl.pctOk ? (portfolioPnlIcon as any) : "remove"}
-              size={14}
-              color={
-                portfolioPnl.pctOk
-                  ? portfolioPnl.kind === "up"
-                    ? "#008C46"
-                    : portfolioPnl.kind === "down"
-                      ? "#C83232"
-                      : "#666"
-                  : "#666"
-              }
-              style={{ opacity: 0.95 }}
-            />
-            <Text style={[styles.heroPnlText, portfolioPnl.pctOk ? portfolioPnlColor : styles.pnlFlat]}>
-              {!hasAnyPaid && portfolioValue > 0 ? (
-                `Gift (${formatMoney(portfolioValue, currency, 0)})`
-              ) : portfolioPnl.pctOk ? (
-                `${formatPct(portfolioPnl.pct)} (${formatMoney(portfolioPnl.amount, currency, 0)})`
-              ) : (
-                "PnL: —"
-              )}
-            </Text>
-          </View>
-
-          <Text style={styles.heroSub}>
-            {formatWeight(totalOz, unit)} •{" "}
-            {spotPerUnitDisplay > 0
-              ? `${formatSpot(spotPerUnitDisplay, currency)}/${unit === "g" ? "g" : "oz"}`
-              : "—"}{" "}
-            • {fetchedAt ? "updated" : "pull to refresh"}
-          </Text>
-
-          {spotError ? (
-            <View style={styles.errorPill}>
-              <Text style={styles.errorText} numberOfLines={2}>
-                Spot fetch failed: {spotError}
-              </Text>
               <Pressable
-                onPress={clearSpotError}
+                onPress={() => router.push("/settings")}
+                style={({ pressed }) => pressed && { opacity: 0.8 }}
                 hitSlop={8}
-                style={({ pressed }) => pressed && { opacity: 0.9 }}
               >
-                <Ionicons name="close" size={16} color={colors.ink} />
+                <Ionicons name="settings-outline" size={22} color={colors.ink} />
               </Pressable>
             </View>
-          ) : null}
-        </View>
 
-        {/* -------- My Stack (compact) -------- */}
-        <View style={styles.card}>
-          <View style={styles.cardHeaderRow}>
-            <Text style={styles.cardTitle}>My Stack</Text>
-            <Text style={styles.cardHint}>
-              {allStackRows.length > 0 ? `${allStackRows.length} positions` : "—"}
+            {/* ✅ NEW: cleaner progress UX (subtle color, numbers outside, no icon) */}
+            <View style={styles.levelBlock}>
+              <View style={styles.levelTopRow}>
+                <View style={{ flexDirection: "row", alignItems: "baseline" }}>
+                  <Text style={styles.levelName}>{level.name}</Text>
+                </View>
+
+                <Text style={styles.levelRight}>{nextLevel ? `Next: ${nextLevel.name}` : "Maxed"}</Text>
+              </View>
+
+              <View style={styles.levelBarOuter}>
+                <View style={[styles.levelBarFill, { width: `${progressMeta.frac * 100}%` }]} />
+              </View>
+            </View>
+
+            <Text style={styles.heroValue}>{formatMoney(portfolioValue, currency, 0)}</Text>
+
+            <View style={styles.heroPnlRow}>
+              <Ionicons
+                name={portfolioPnl.pctOk ? (portfolioPnlIcon as any) : "remove"}
+                size={14}
+                color={
+                  portfolioPnl.pctOk
+                    ? portfolioPnl.kind === "up"
+                      ? "#008C46"
+                      : portfolioPnl.kind === "down"
+                        ? "#C83232"
+                        : "#666"
+                    : "#666"
+                }
+                style={{ opacity: 0.95 }}
+              />
+              <Text
+                style={[styles.heroPnlText, portfolioPnl.pctOk ? portfolioPnlColor : styles.pnlFlat]}
+              >
+                {!hasAnyPaid && portfolioValue > 0 ? (
+                  `Gift (${formatMoney(portfolioValue, currency, 0)})`
+                ) : portfolioPnl.pctOk ? (
+                  `${formatPct(portfolioPnl.pct)} (${formatMoney(portfolioPnl.amount, currency, 0)})`
+                ) : (
+                  "PnL: —"
+                )}
+              </Text>
+            </View>
+
+            <Text style={styles.heroSub}>
+              {formatWeight(totalOz, unit)} •{" "}
+              {spotPerUnitDisplay > 0
+                ? `${formatSpot(spotPerUnitDisplay, currency)}/${unit === "g" ? "g" : "oz"}`
+                : "—"}{" "}
+              • {fetchedAt ? `updated ${timeAgo(fetchedAt)}` : "pull to refresh"}
             </Text>
+
+            {spotError ? (
+              <View style={styles.errorPill}>
+                <Text style={styles.errorText} numberOfLines={2}>
+                  Spot fetch failed: {spotError}
+                </Text>
+                <Pressable
+                  onPress={clearSpotError}
+                  hitSlop={8}
+                  style={({ pressed }) => pressed && { opacity: 0.9 }}
+                >
+                  <Ionicons name="close" size={16} color={colors.ink} />
+                </Pressable>
+              </View>
+            ) : null}
           </View>
 
-          {/* categories promoted to top */}
-          {categoryTotals.length > 0 ? (
-            <View style={styles.categoryWrapCompact}>
-              {categoryTotals.map((r) => (
-                <View key={r.cat} style={styles.categoryRow}>
-                  <Text style={styles.categoryLabel}>{categoryLabel(r.cat)}</Text>
-                  <Text style={styles.categoryValue}>
-                    {formatWeight(r.oz, unit)}
-                    {"  "}•{"  "}
-                    {spotPerOzDisplay > 0 ? formatMoney(r.value, currency, 0) : "—"}
-                  </Text>
-                </View>
-              ))}
-            </View>
-          ) : (
-            <Text style={[styles.categoryValue, { marginTop: spacing.md }]}>No positions yet.</Text>
-          )}
-
-          <Pressable
-            onPress={() => setPositionsOpen((v) => !v)}
-            style={({ pressed }) => [
-              styles.viewPositionsBtn,
-              pressed && { opacity: 0.9 },
-            ]}
-          >
-            <Text style={styles.viewPositionsText}>
-              {positionsOpen ? "Hide positions" : "View positions"}
-            </Text>
-            <Ionicons
-              name={positionsOpen ? "chevron-up" : "chevron-down"}
-              size={18}
-              color={colors.ink}
-              style={{ opacity: 0.55 }}
-            />
-          </Pressable>
-
-          {positionsOpen ? (
-            <View style={{ marginTop: spacing.lg }}>
-              <MyStackConviction unit={unit} slices={visibleStackRows} />
-
-              {canExpandStack ? (
-                <Pressable
-                  onPress={() => setShowAllStack(true)}
-                  style={({ pressed }) => [styles.expandBtn, pressed && { opacity: 0.9 }]}
-                >
-                  <Text style={styles.expandText}>+ {hiddenStackCount} smaller positions</Text>
-                  <Ionicons name="chevron-down" size={18} color={colors.ink} style={{ opacity: 0.55 }} />
-                </Pressable>
-              ) : null}
-
-              {showAllStack && allStackRows.length > STACK_TOP_N ? (
-                <Pressable
-                  onPress={() => setShowAllStack(false)}
-                  style={({ pressed }) => [styles.expandBtn, pressed && { opacity: 0.9 }]}
-                >
-                  <Text style={styles.expandText}>Show top only</Text>
-                  <Ionicons name="chevron-up" size={18} color={colors.ink} style={{ opacity: 0.55 }} />
-                </Pressable>
-              ) : null}
-            </View>
-          ) : null}
-        </View>
-
-        {/* -------- Purchase history -------- */}
-        {purchaseRows.length > 0 ? (
+          {/* -------- My Stack (compact) -------- */}
           <View style={styles.card}>
             <View style={styles.cardHeaderRow}>
-              <Text style={styles.cardTitle}>Purchase history</Text>
-              <Text style={styles.cardHint}>{purchaseRows.length} total</Text>
+              <Text style={styles.cardTitle}>My Stack</Text>
+              <Text style={styles.cardHint}>
+                {allStackRows.length > 0 ? `${allStackRows.length} positions` : "—"}
+              </Text>
             </View>
 
+            {categoryTotals.length > 0 ? (
+              <View style={styles.categoryWrapCompact}>
+                {categoryTotals.map((r) => (
+                  <View key={r.cat} style={styles.categoryRow}>
+                    <Text style={styles.categoryLabel}>{categoryLabel(r.cat)}</Text>
+                    <Text style={styles.categoryValue}>
+                      {formatWeight(r.oz, unit)}
+                      {"  "}•{"  "}
+                      {spotPerOzDisplay > 0 ? formatMoney(r.value, currency, 0) : "—"}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            ) : (
+              <Text style={[styles.categoryValue, { marginTop: spacing.md }]}>No positions yet.</Text>
+            )}
+
             <Pressable
-              onPress={() => setShowPurchases((v) => !v)}
-              style={({ pressed }) => [styles.toggleBtn, pressed && { opacity: 0.9 }]}
+              onPress={() => setPositionsOpen((v) => !v)}
+              style={({ pressed }) => [styles.viewPositionsBtn, pressed && { opacity: 0.9 }]}
             >
-              <Text style={styles.toggleText}>
-                {showPurchases ? "Hide history" : "View history"}
+              <Text style={styles.viewPositionsText}>
+                {positionsOpen ? "Hide positions" : "View positions"}
               </Text>
               <Ionicons
-                name={showPurchases ? "chevron-up" : "chevron-down"}
+                name={positionsOpen ? "chevron-up" : "chevron-down"}
                 size={18}
                 color={colors.ink}
-                style={{ opacity: 0.6 }}
+                style={{ opacity: 0.55 }}
               />
             </Pressable>
 
-            {showPurchases ? (
+            {positionsOpen ? (
+              <View style={{ marginTop: spacing.lg }}>
+                <MyStackConviction unit={unit} slices={visibleStackRows} />
+
+                {canExpandStack ? (
+                  <Pressable
+                    onPress={() => setShowAllStack(true)}
+                    style={({ pressed }) => [styles.expandBtn, pressed && { opacity: 0.9 }]}
+                  >
+                    <Text style={styles.expandText}>+ {hiddenStackCount} smaller positions</Text>
+                    <Ionicons name="chevron-down" size={18} color={colors.ink} style={{ opacity: 0.55 }} />
+                  </Pressable>
+                ) : null}
+
+                {showAllStack && allStackRows.length > STACK_TOP_N ? (
+                  <Pressable
+                    onPress={() => setShowAllStack(false)}
+                    style={({ pressed }) => [styles.expandBtn, pressed && { opacity: 0.9 }]}
+                  >
+                    <Text style={styles.expandText}>Show top only</Text>
+                    <Ionicons name="chevron-up" size={18} color={colors.ink} style={{ opacity: 0.55 }} />
+                  </Pressable>
+                ) : null}
+              </View>
+            ) : null}
+          </View>
+
+          <Pressable
+            onPress={() => router.push("/stack/add")}
+            style={({ pressed }) => [styles.cta, pressed && { opacity: 0.9 }]}
+          >
+            <Text style={styles.ctaText}>＋ Stack</Text>
+          </Pressable>
+        </View>
+
+        {/* -------- Purchase history (auto visible when you scroll down) -------- */}
+        {purchaseRows.length > 0 ? (
+          <View
+            onLayout={(e) => {
+              purchaseAnchorYRef.current = e.nativeEvent.layout.y;
+            }}
+          >
+            <View style={styles.card}>
+              <View style={styles.cardHeaderRow}>
+                <Text style={styles.cardTitle}>Purchase history</Text>
+                <Text style={styles.cardHint}>{purchaseRows.length} total</Text>
+              </View>
+
               <View style={{ marginTop: spacing.lg }}>
                 {purchaseSections.map((section) => (
                   <View key={section.key} style={{ marginBottom: spacing.lg }}>
@@ -720,7 +763,9 @@ export default function HomeScreen() {
                           spotPerOzDisplay={spotPerOzDisplay}
                           perOzByCurrency={perOzByCurrency}
                           displayCurrency={currency}
-                          onPress={() => router.push(`/stack/add?entryId=${encodeURIComponent(p.id)}`)}
+                          onPress={() =>
+                            router.push(`/stack/add?entryId=${encodeURIComponent(p.id)}`)
+                          }
                         />
                       ))}
                     </View>
@@ -739,17 +784,26 @@ export default function HomeScreen() {
                   </Pressable>
                 ) : null}
               </View>
-            ) : null}
+            </View>
           </View>
         ) : null}
-
-        <Pressable
-          onPress={() => router.push("/stack/add")}
-          style={({ pressed }) => [styles.cta, pressed && { opacity: 0.9 }]}
-        >
-          <Text style={styles.ctaText}>＋ Stack</Text>
-        </Pressable>
       </ScrollView>
+
+      {/* ✅ docked "Scroll down" nudge */}
+      {purchaseRows.length > 0 && showPurchaseNudge ? (
+        <View style={styles.purchaseNudgeWrap} pointerEvents="box-none">
+          <Pressable
+            onPress={() => {
+              const y = purchaseAnchorYRef.current;
+              if (y > 0) scrollRef.current?.scrollTo({ y: Math.max(0, y - 12), animated: true });
+            }}
+            style={({ pressed }) => [styles.purchaseNudgePill, pressed && { opacity: 0.9 }]}
+          >
+            <Ionicons name="chevron-down" size={18} color={colors.ink} style={{ opacity: 0.7 }} />
+            <Text style={styles.purchaseNudgeText}>Scroll down for purchase history</Text>
+          </Pressable>
+        </View>
+      ) : null}
     </SafeAreaView>
   );
 }
@@ -767,25 +821,61 @@ const styles = StyleSheet.create({
   },
   appTitle: { ...text.titleM, color: colors.ink },
 
-  levelRow: {
+  brandRow: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: spacing.sm,
+    gap: 10,
   },
-  levelChip: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.xs,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.72)",
+
+  logo: {
+    width: 150, // tweak
+    height: 44, // tweak
+  },
+
+  // ✅ improved level/progress block
+  levelBlock: {
+    marginBottom: spacing.sm,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: radius.md,
+    backgroundColor: "rgba(255,255,255,0.70)",
     borderWidth: 1,
     borderColor: "rgba(0,0,0,0.06)",
   },
-  levelChipText: { ...text.label, color: colors.inkSoft },
-  levelHint: { ...text.hint, color: colors.inkMuted },
+  levelTopRow: {
+    flexDirection: "row",
+    alignItems: "baseline",
+    justifyContent: "space-between",
+    gap: spacing.md,
+  },
+  levelName: { ...text.titleM, fontSize: 14, color: colors.ink },
+  levelOrdinal: { ...text.hint, color: colors.inkMuted },
+  levelRight: { ...text.hint, color: colors.inkMuted, textAlign: "right" },
+
+  levelBarOuter: {
+    marginTop: 10,
+    height: 10,
+    borderRadius: 999,
+    backgroundColor: "rgba(0,0,0,0.06)",
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(0,0,0,0.06)",
+  },
+  // subtle color (blue) without shouting
+  levelBarFill: {
+    height: "100%",
+    borderRadius: 999,
+    backgroundColor: "rgba(60, 120, 255, 0.22)",
+  },
+  levelMetaRow: {
+    marginTop: 8,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: spacing.md,
+  },
+  levelMetaLeft: { ...text.hint, color: colors.inkMuted },
+  levelMetaRight: { ...text.hint, color: colors.inkSoft, textAlign: "right" },
 
   heroValue: { ...text.titleXL, color: colors.ink },
 
@@ -868,20 +958,6 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
   },
   expandText: { ...text.label, color: colors.inkSoft },
-
-  toggleBtn: {
-    marginTop: spacing.lg,
-    paddingVertical: spacing.lg,
-    paddingHorizontal: spacing.lg,
-    borderRadius: radius.md,
-    backgroundColor: "rgba(255,255,255,0.78)",
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    borderWidth: 1,
-    borderColor: "rgba(0,0,0,0.06)",
-  },
-  toggleText: { ...text.titleM, fontSize: 14, color: colors.ink },
 
   timelineHeader: {
     ...text.label,
@@ -976,4 +1052,28 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.14)",
   },
   ctaText: { ...text.titleM, fontSize: 16, color: colors.ink },
+
+  // ✅ docked "scroll down" pill
+  purchaseNudgeWrap: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 12,
+    alignItems: "center",
+  },
+  purchaseNudgePill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.86)",
+    borderWidth: 1,
+    borderColor: "rgba(0,0,0,0.08)",
+  },
+  purchaseNudgeText: {
+    ...text.label,
+    color: colors.inkSoft,
+  },
 });
