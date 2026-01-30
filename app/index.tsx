@@ -30,11 +30,13 @@ import { formatMoney, formatSpot } from "../src/utils/money";
 import { colors, spacing, radius, text } from "../src/theme/tokens";
 
 // ✅ add (adjust path if your assets folder differs)
-const stackdLogo = require("../assets/images/stackd-logo-2.png");
+const stackdLogo = require("../assets/images/stackd-logo.png");
 
 const TROY_OZ_GRAMS = 31.1035;
 const PAGE_SIZE = 10;
-const STACK_TOP_N = 5;
+
+// ✅ correct Expo Router route for app/(modal)/settings.tsx
+const SETTINGS_ROUTE = "/(modal)/settings";
 
 /* ---------------- gamification ---------------- */
 
@@ -68,6 +70,11 @@ function getNextLevel(totalOz: number) {
 }
 
 /* ---------------- helpers ---------------- */
+
+function clamp01(n: number) {
+  if (!Number.isFinite(n)) return 0;
+  return Math.min(1, Math.max(0, n));
+}
 
 function formatWeight(oz: number, unit: "oz" | "g") {
   if (unit === "g") {
@@ -216,18 +223,13 @@ function TimelineRow({
   const pnl = computePnl(paidDisplay, currentValue);
 
   const pnlColor =
-    pnl.kind === "up"
-      ? styles.pnlUp
-      : pnl.kind === "down"
-        ? styles.pnlDown
-        : styles.pnlFlat;
+    pnl.kind === "up" ? styles.pnlUp : pnl.kind === "down" ? styles.pnlDown : styles.pnlFlat;
 
   const pnlIcon = pnl.kind === "up" ? "arrow-up" : pnl.kind === "down" ? "arrow-down" : "remove";
 
   const showGift = item.isGift === true;
 
-  const iconColor =
-    pnl.kind === "up" ? "#008C46" : pnl.kind === "down" ? "#C83232" : "#666";
+  const iconColor = pnl.kind === "up" ? "#008C46" : pnl.kind === "down" ? "#C83232" : "#666";
 
   return (
     <Pressable
@@ -278,8 +280,8 @@ function TimelineRow({
               {showGift
                 ? formatMoney(pnl.amount, displayCurrency, 0)
                 : pnl.pctOk
-                  ? `${formatPct(pnl.pct)} (${formatMoney(pnl.amount, displayCurrency, 0)})`
-                  : "PnL: —"}
+                ? `${formatPct(pnl.pct)} (${formatMoney(pnl.amount, displayCurrency, 0)})`
+                : "PnL: —"}
             </Text>
           </View>
         </View>
@@ -298,6 +300,7 @@ export default function HomeScreen() {
   const currency = useSettingsStore((s) => s.currency);
 
   const entries = useStackStore((s) => s.entries);
+  const isEmpty = entries.length === 0;
 
   const coins = useCoinStore((s) => s.coins);
   const seedIfEmpty = useCoinStore((s) => s.seedIfEmpty);
@@ -321,29 +324,25 @@ export default function HomeScreen() {
 
   // ✅ collapse “My Stack” by default
   const [positionsOpen, setPositionsOpen] = useState(false);
-  const [showAllStack, setShowAllStack] = useState(false);
 
-  // ✅ purchase history "below the fold" + docked nudge
+  // ✅ stacking history "below the fold" + docked nudge
   const scrollRef = useRef<ScrollView>(null);
-  const purchaseAnchorYRef = useRef<number>(0);
-  const [showPurchaseNudge, setShowPurchaseNudge] = useState(true);
+  const stackingAnchorYRef = useRef<number>(0);
+  const [stackingNudgeOpacity, setStackingNudgeOpacity] = useState(1);
 
   useEffect(() => {
     seedIfEmpty();
   }, [seedIfEmpty]);
 
+  // ✅ Only fetch spot once the user has at least one entry (saves calls on fresh install)
   useEffect(() => {
+    if (entries.length === 0) return;
     if (!fetchedAt) refreshSpot();
-  }, [fetchedAt, refreshSpot]);
+  }, [entries.length, fetchedAt, refreshSpot]);
 
   useEffect(() => {
     setVisibleCount((v) => Math.min(Math.max(PAGE_SIZE, v), entries.length || PAGE_SIZE));
   }, [entries.length]);
-
-  // if positions panel closes, also collapse “show all”
-  useEffect(() => {
-    if (!positionsOpen) setShowAllStack(false);
-  }, [positionsOpen]);
 
   const fineOzByCoinId = useMemo(() => {
     const map: Record<string, number> = {};
@@ -405,15 +404,15 @@ export default function HomeScreen() {
     portfolioPnl.kind === "up"
       ? styles.pnlUp
       : portfolioPnl.kind === "down"
-        ? styles.pnlDown
-        : styles.pnlFlat;
+      ? styles.pnlDown
+      : styles.pnlFlat;
 
   const portfolioPnlIcon =
     portfolioPnl.kind === "up"
       ? "arrow-up"
       : portfolioPnl.kind === "down"
-        ? "arrow-down"
-        : "remove";
+      ? "arrow-down"
+      : "remove";
 
   const level = useMemo(() => getStackLevel(totalOz), [totalOz]);
   const nextLevel = useMemo(() => getNextLevel(totalOz), [totalOz]);
@@ -461,14 +460,6 @@ export default function HomeScreen() {
       .filter((r) => Number.isFinite(r.oz) && r.oz > 0)
       .sort((a, b) => b.oz - a.oz);
   }, [entries, fineOzByCoinId, coins]);
-
-  const visibleStackRows = useMemo(() => {
-    if (showAllStack) return allStackRows;
-    return allStackRows.slice(0, STACK_TOP_N);
-  }, [allStackRows, showAllStack]);
-
-  const hiddenStackCount = Math.max(0, allStackRows.length - STACK_TOP_N);
-  const canExpandStack = positionsOpen && !showAllStack && hiddenStackCount > 0;
 
   const categoryTotals = useMemo(() => {
     const order: StackCategory[] = ["bullion", "collector", "jewellery", "scrap", "other"];
@@ -538,7 +529,7 @@ export default function HomeScreen() {
       });
   }, [entries, getCoin, fineOzByCoinId]);
 
-  // always visible when you scroll down (no toggle). still paginated.
+  // still paginated.
   const visiblePurchaseRows = useMemo(() => purchaseRows.slice(0, visibleCount), [
     purchaseRows,
     visibleCount,
@@ -562,17 +553,36 @@ export default function HomeScreen() {
       .sort((a, b) => (a.key < b.key ? 1 : -1));
   }, [visiblePurchaseRows]);
 
+  // ✅ Avoid exposing refresh UX when empty
+  const refreshEnabled = !isEmpty;
+
+  // plural helper for positions
+  const positionsCount = allStackRows.length;
+  const positionsLabel = positionsCount === 1 ? "position" : "positions";
+
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <ScrollView
         ref={scrollRef}
         contentContainerStyle={styles.container}
-        refreshControl={<RefreshControl refreshing={isLoading} onRefresh={refreshSpot} />}
+        refreshControl={
+          refreshEnabled ? (
+            <RefreshControl refreshing={isLoading} onRefresh={refreshSpot} />
+          ) : undefined
+        }
         scrollEventThrottle={16}
         onScroll={(e) => {
           const y = e.nativeEvent.contentOffset.y;
-          const anchorY = purchaseAnchorYRef.current;
-          if (anchorY > 0) setShowPurchaseNudge(y < anchorY - 80);
+          const anchorY = stackingAnchorYRef.current;
+
+          if (anchorY > 0) {
+            // Start fading as soon as the stacking history begins to enter the viewport.
+            const screenBottom = y + viewportH;
+            const fadeRange = 140; // smaller = quicker fade
+            const p = clamp01((screenBottom - anchorY) / fadeRange); // 0 before visible, 1 after
+            const opacity = 1 - p;
+            setStackingNudgeOpacity(opacity);
+          }
         }}
       >
         {/* -------- "Home page" area (full viewport) -------- */}
@@ -582,7 +592,7 @@ export default function HomeScreen() {
               <Image source={stackdLogo} style={styles.logo} resizeMode="contain" />
 
               <Pressable
-                onPress={() => router.push("/settings")}
+                onPress={() => router.push(SETTINGS_ROUTE)}
                 style={({ pressed }) => pressed && { opacity: 0.8 }}
                 hitSlop={8}
               >
@@ -590,161 +600,207 @@ export default function HomeScreen() {
               </Pressable>
             </View>
 
-            {/* ✅ NEW: cleaner progress UX (subtle color, numbers outside, no icon) */}
+            {/* ✅ Progress: contextual labels when empty */}
             <View style={styles.levelBlock}>
               <View style={styles.levelTopRow}>
-                <View style={{ flexDirection: "row", alignItems: "baseline" }}>
-                  <Text style={styles.levelName}>{level.name}</Text>
-                </View>
+                <Text style={styles.levelName}>{isEmpty ? "Getting started" : level.name}</Text>
 
-                <Text style={styles.levelRight}>{nextLevel ? `Next: ${nextLevel.name}` : "Maxed"}</Text>
+                <Text style={styles.levelRight}>
+                  {isEmpty ? "Add your first stack" : nextLevel ? `Next: ${nextLevel.name}` : "Maxed"}
+                </Text>
               </View>
 
               <View style={styles.levelBarOuter}>
-                <View style={[styles.levelBarFill, { width: `${progressMeta.frac * 100}%` }]} />
+                <View
+                  style={[
+                    styles.levelBarFill,
+                    { width: `${(isEmpty ? 0.08 : progressMeta.frac) * 100}%` },
+                  ]}
+                />
               </View>
             </View>
 
-            <Text style={styles.heroValue}>{formatMoney(portfolioValue, currency, 0)}</Text>
+            {/* ✅ Empty state */}
+            {isEmpty ? (
+              <View style={styles.welcomeCard}>
+                <View style={styles.welcomeTitleRow}>
+                  <Ionicons
+                    name="sparkles-outline"
+                    size={18}
+                    color={colors.ink}
+                    style={{ opacity: 0.8 }}
+                  />
+                  <Text style={styles.welcomeTitle}>Welcome to Stackd</Text>
+                </View>
 
-            <View style={styles.heroPnlRow}>
-              <Ionicons
-                name={portfolioPnl.pctOk ? (portfolioPnlIcon as any) : "remove"}
-                size={14}
-                color={
-                  portfolioPnl.pctOk
-                    ? portfolioPnl.kind === "up"
-                      ? "#008C46"
-                      : portfolioPnl.kind === "down"
-                        ? "#C83232"
-                        : "#666"
-                    : "#666"
-                }
-                style={{ opacity: 0.95 }}
-              />
-              <Text
-                style={[styles.heroPnlText, portfolioPnl.pctOk ? portfolioPnlColor : styles.pnlFlat]}
-              >
-                {!hasAnyPaid && portfolioValue > 0 ? (
-                  `Gift (${formatMoney(portfolioValue, currency, 0)})`
-                ) : portfolioPnl.pctOk ? (
-                  `${formatPct(portfolioPnl.pct)} (${formatMoney(portfolioPnl.amount, currency, 0)})`
-                ) : (
-                  "PnL: —"
-                )}
-              </Text>
-            </View>
-
-            <Text style={styles.heroSub}>
-              {formatWeight(totalOz, unit)} •{" "}
-              {spotPerUnitDisplay > 0
-                ? `${formatSpot(spotPerUnitDisplay, currency)}/${unit === "g" ? "g" : "oz"}`
-                : "—"}{" "}
-              • {fetchedAt ? `updated ${timeAgo(fetchedAt)}` : "pull to refresh"}
-            </Text>
-
-            {spotError ? (
-              <View style={styles.errorPill}>
-                <Text style={styles.errorText} numberOfLines={2}>
-                  Spot fetch failed: {spotError}
+                <Text style={styles.welcomeSub}>
+                  Track every bar and coin like a receipt timeline — see what you paid, what it’s
+                  worth now, and PnL per item.
                 </Text>
-                <Pressable
-                  onPress={clearSpotError}
-                  hitSlop={8}
-                  style={({ pressed }) => pressed && { opacity: 0.9 }}
-                >
-                  <Ionicons name="close" size={16} color={colors.ink} />
-                </Pressable>
-              </View>
-            ) : null}
-          </View>
 
-          {/* -------- My Stack (compact) -------- */}
-          <View style={styles.card}>
-            <View style={styles.cardHeaderRow}>
-              <Text style={styles.cardTitle}>My Stack</Text>
-              <Text style={styles.cardHint}>
-                {allStackRows.length > 0 ? `${allStackRows.length} positions` : "—"}
-              </Text>
-            </View>
+                <Text style={styles.welcomeHint}>
+                  No account needed. Connect your wallet to back up and restore anytime.
+                </Text>
 
-            {categoryTotals.length > 0 ? (
-              <View style={styles.categoryWrapCompact}>
-                {categoryTotals.map((r) => (
-                  <View key={r.cat} style={styles.categoryRow}>
-                    <Text style={styles.categoryLabel}>{categoryLabel(r.cat)}</Text>
-                    <Text style={styles.categoryValue}>
-                      {formatWeight(r.oz, unit)}
-                      {"  "}•{"  "}
-                      {spotPerOzDisplay > 0 ? formatMoney(r.value, currency, 0) : "—"}
-                    </Text>
-                  </View>
-                ))}
+                <View style={styles.welcomeActions}>
+                  <Pressable
+                    onPress={() => router.push("/stack/add")}
+                    style={({ pressed }) => [styles.welcomePrimary, pressed && { opacity: 0.92 }]}
+                  >
+                    <Ionicons name="add" size={18} color={colors.ink} style={{ opacity: 0.9 }} />
+                    <Text style={styles.welcomePrimaryText}>Add your first stack</Text>
+                  </Pressable>
+
+                  <Pressable
+                    onPress={() => router.push(SETTINGS_ROUTE)}
+                    style={({ pressed }) => [styles.welcomeSecondary, pressed && { opacity: 0.92 }]}
+                  >
+                    <Ionicons
+                      name="wallet-outline"
+                      size={16}
+                      color={colors.ink}
+                      style={{ opacity: 0.75 }}
+                    />
+                    <Text style={styles.welcomeSecondaryText}>Connect wallet & restore</Text>
+                  </Pressable>
+                </View>
               </View>
             ) : (
-              <Text style={[styles.categoryValue, { marginTop: spacing.md }]}>No positions yet.</Text>
+              <>
+                <Text style={styles.heroValue}>{formatMoney(portfolioValue, currency, 0)}</Text>
+
+                <View style={styles.heroPnlRow}>
+                  <Ionicons
+                    name={portfolioPnl.pctOk ? (portfolioPnlIcon as any) : "remove"}
+                    size={14}
+                    color={
+                      portfolioPnl.pctOk
+                        ? portfolioPnl.kind === "up"
+                          ? "#008C46"
+                          : portfolioPnl.kind === "down"
+                          ? "#C83232"
+                          : "#666"
+                        : "#666"
+                    }
+                    style={{ opacity: 0.95 }}
+                  />
+                  <Text
+                    style={[
+                      styles.heroPnlText,
+                      portfolioPnl.pctOk ? portfolioPnlColor : styles.pnlFlat,
+                    ]}
+                  >
+                    {!hasAnyPaid && portfolioValue > 0 ? (
+                      `Gift (${formatMoney(portfolioValue, currency, 0)})`
+                    ) : portfolioPnl.pctOk ? (
+                      `${formatPct(portfolioPnl.pct)} (${formatMoney(portfolioPnl.amount, currency, 0)})`
+                    ) : (
+                      "PnL: —"
+                    )}
+                  </Text>
+                </View>
+
+                <Text style={styles.heroSub}>
+                  {formatWeight(totalOz, unit)} •{" "}
+                  {spotPerUnitDisplay > 0
+                    ? `${formatSpot(spotPerUnitDisplay, currency)}/${unit === "g" ? "g" : "oz"}`
+                    : "—"}{" "}
+                  • {fetchedAt ? `updated ${timeAgo(fetchedAt)}` : "pull to refresh"}
+                </Text>
+
+                {spotError ? (
+                  <View style={styles.errorPill}>
+                    <Text style={styles.errorText} numberOfLines={2}>
+                      Spot fetch failed: {spotError}
+                    </Text>
+                    <Pressable
+                      onPress={clearSpotError}
+                      hitSlop={8}
+                      style={({ pressed }) => pressed && { opacity: 0.9 }}
+                    >
+                      <Ionicons name="close" size={16} color={colors.ink} />
+                    </Pressable>
+                  </View>
+                ) : null}
+              </>
             )}
-
-            <Pressable
-              onPress={() => setPositionsOpen((v) => !v)}
-              style={({ pressed }) => [styles.viewPositionsBtn, pressed && { opacity: 0.9 }]}
-            >
-              <Text style={styles.viewPositionsText}>
-                {positionsOpen ? "Hide positions" : "View positions"}
-              </Text>
-              <Ionicons
-                name={positionsOpen ? "chevron-up" : "chevron-down"}
-                size={18}
-                color={colors.ink}
-                style={{ opacity: 0.55 }}
-              />
-            </Pressable>
-
-            {positionsOpen ? (
-              <View style={{ marginTop: spacing.lg }}>
-                <MyStackConviction unit={unit} slices={visibleStackRows} />
-
-                {canExpandStack ? (
-                  <Pressable
-                    onPress={() => setShowAllStack(true)}
-                    style={({ pressed }) => [styles.expandBtn, pressed && { opacity: 0.9 }]}
-                  >
-                    <Text style={styles.expandText}>+ {hiddenStackCount} smaller positions</Text>
-                    <Ionicons name="chevron-down" size={18} color={colors.ink} style={{ opacity: 0.55 }} />
-                  </Pressable>
-                ) : null}
-
-                {showAllStack && allStackRows.length > STACK_TOP_N ? (
-                  <Pressable
-                    onPress={() => setShowAllStack(false)}
-                    style={({ pressed }) => [styles.expandBtn, pressed && { opacity: 0.9 }]}
-                  >
-                    <Text style={styles.expandText}>Show top only</Text>
-                    <Ionicons name="chevron-up" size={18} color={colors.ink} style={{ opacity: 0.55 }} />
-                  </Pressable>
-                ) : null}
-              </View>
-            ) : null}
           </View>
 
-          <Pressable
-            onPress={() => router.push("/stack/add")}
-            style={({ pressed }) => [styles.cta, pressed && { opacity: 0.9 }]}
-          >
-            <Text style={styles.ctaText}>＋ Stack</Text>
-          </Pressable>
+          {/* -------- My Stack + CTA (hidden on fresh install) -------- */}
+          {!isEmpty ? (
+            <>
+              <View style={styles.card}>
+                <View style={styles.cardHeaderRow}>
+                  <Text style={styles.cardTitle}>My Stack</Text>
+                </View>
+
+                {categoryTotals.length > 0 ? (
+                  <View style={styles.categoryWrapCompact}>
+                    {categoryTotals.map((r) => (
+                      <View key={r.cat} style={styles.categoryRow}>
+                        <Text style={styles.categoryLabel}>{categoryLabel(r.cat)}</Text>
+                        <Text style={styles.categoryValue}>
+                          {formatWeight(r.oz, unit)}
+                          {"  "}•{"  "}
+                          {spotPerOzDisplay > 0 ? formatMoney(r.value, currency, 0) : "—"}
+                        </Text>
+                      </View>
+                    ))}
+                  </View>
+                ) : (
+                  <View style={{ marginTop: spacing.md }}>
+                    <Text style={styles.emptyStackTitle}>Your stack will appear here.</Text>
+                    <Text style={styles.emptyStackSub}>
+                      Add bars, coins, jewellery, or scrap to start tracking.
+                    </Text>
+                  </View>
+                )}
+
+                <Pressable
+                  onPress={() => setPositionsOpen((v) => !v)}
+                  style={({ pressed }) => [styles.viewPositionsBtn, pressed && { opacity: 0.9 }]}
+                  disabled={isEmpty}
+                >
+                  <Text style={styles.viewPositionsText}>
+                    {positionsOpen ? "Hide positions" : `View ${positionsCount} ${positionsLabel}`}
+                  </Text>
+
+                  <Ionicons
+                    name={positionsOpen ? "chevron-up" : "chevron-down"}
+                    size={18}
+                    color={colors.ink}
+                    style={{ opacity: 0.55 }}
+                  />
+                </Pressable>
+
+                {positionsOpen ? (
+                  <View style={{ marginTop: spacing.lg }}>
+                    <MyStackConviction unit={unit} slices={allStackRows} />
+                  </View>
+                ) : null}
+              </View>
+
+              {/* Primary CTA */}
+              <Pressable
+                onPress={() => router.push("/stack/add")}
+                style={({ pressed }) => [styles.cta, pressed && { opacity: 0.9 }]}
+              >
+                <Text style={styles.ctaText}>＋ Stack</Text>
+              </Pressable>
+            </>
+          ) : null}
         </View>
 
-        {/* -------- Purchase history (auto visible when you scroll down) -------- */}
+        {/* -------- Stacking history -------- */}
         {purchaseRows.length > 0 ? (
           <View
             onLayout={(e) => {
-              purchaseAnchorYRef.current = e.nativeEvent.layout.y;
+              stackingAnchorYRef.current = e.nativeEvent.layout.y;
             }}
           >
             <View style={styles.card}>
               <View style={styles.cardHeaderRow}>
-                <Text style={styles.cardTitle}>Purchase history</Text>
+                <Text style={styles.cardTitle}>Stacking history</Text>
                 <Text style={styles.cardHint}>{purchaseRows.length} total</Text>
               </View>
 
@@ -778,8 +834,7 @@ export default function HomeScreen() {
                     style={({ pressed }) => [styles.loadMoreBtn, pressed && { opacity: 0.9 }]}
                   >
                     <Text style={styles.loadMoreText}>
-                      Load more ({Math.min(visibleCount + PAGE_SIZE, purchaseRows.length)}/
-                      {purchaseRows.length})
+                      Show {Math.min(PAGE_SIZE, Math.max(0, purchaseRows.length - visibleCount))} more
                     </Text>
                   </Pressable>
                 ) : null}
@@ -789,18 +844,22 @@ export default function HomeScreen() {
         ) : null}
       </ScrollView>
 
-      {/* ✅ docked "Scroll down" nudge */}
-      {purchaseRows.length > 0 && showPurchaseNudge ? (
+      {/* ✅ docked nudge (now fades as soon as stacking history enters view) */}
+      {purchaseRows.length > 0 && stackingNudgeOpacity > 0.03 ? (
         <View style={styles.purchaseNudgeWrap} pointerEvents="box-none">
           <Pressable
             onPress={() => {
-              const y = purchaseAnchorYRef.current;
+              const y = stackingAnchorYRef.current;
               if (y > 0) scrollRef.current?.scrollTo({ y: Math.max(0, y - 12), animated: true });
             }}
-            style={({ pressed }) => [styles.purchaseNudgePill, pressed && { opacity: 0.9 }]}
+            style={({ pressed }) => [
+              styles.purchaseNudgePill,
+              { opacity: stackingNudgeOpacity },
+              pressed && { opacity: Math.max(0.1, stackingNudgeOpacity * 0.9) },
+            ]}
           >
             <Ionicons name="chevron-down" size={18} color={colors.ink} style={{ opacity: 0.7 }} />
-            <Text style={styles.purchaseNudgeText}>Scroll down for purchase history</Text>
+            <Text style={styles.purchaseNudgeText}>Scroll for stacking history</Text>
           </Pressable>
         </View>
       ) : null}
@@ -819,20 +878,12 @@ const styles = StyleSheet.create({
     marginBottom: spacing.md,
     alignItems: "center",
   },
-  appTitle: { ...text.titleM, color: colors.ink },
-
-  brandRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-  },
 
   logo: {
-    width: 150, // tweak
-    height: 44, // tweak
+    width: 150,
+    height: 44,
   },
 
-  // ✅ improved level/progress block
   levelBlock: {
     marginBottom: spacing.sm,
     paddingVertical: 10,
@@ -849,7 +900,6 @@ const styles = StyleSheet.create({
     gap: spacing.md,
   },
   levelName: { ...text.titleM, fontSize: 14, color: colors.ink },
-  levelOrdinal: { ...text.hint, color: colors.inkMuted },
   levelRight: { ...text.hint, color: colors.inkMuted, textAlign: "right" },
 
   levelBarOuter: {
@@ -861,21 +911,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(0,0,0,0.06)",
   },
-  // subtle color (blue) without shouting
   levelBarFill: {
     height: "100%",
     borderRadius: 999,
     backgroundColor: "rgba(60, 120, 255, 0.22)",
   },
-  levelMetaRow: {
-    marginTop: 8,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: spacing.md,
-  },
-  levelMetaLeft: { ...text.hint, color: colors.inkMuted },
-  levelMetaRight: { ...text.hint, color: colors.inkSoft, textAlign: "right" },
 
   heroValue: { ...text.titleXL, color: colors.ink },
 
@@ -888,6 +928,53 @@ const styles = StyleSheet.create({
   heroPnlText: { ...text.body, fontSize: 13, fontWeight: "800" },
 
   heroSub: { ...text.body, color: colors.inkMuted, marginTop: spacing.sm },
+
+  welcomeCard: {
+    marginTop: spacing.sm,
+    padding: spacing.lg,
+    borderRadius: radius.lg,
+    backgroundColor: "rgba(255,255,255,0.78)",
+    borderWidth: 1,
+    borderColor: "rgba(0,0,0,0.06)",
+  },
+  welcomeTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  welcomeTitle: { ...text.titleM, fontSize: 16, color: colors.ink },
+  welcomeSub: { ...text.body, color: colors.inkMuted, marginTop: spacing.sm },
+  welcomeHint: { ...text.hint, color: colors.inkMuted, marginTop: spacing.sm },
+  welcomeActions: {
+    marginTop: spacing.md,
+    gap: spacing.sm,
+  },
+  welcomePrimary: {
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.lg,
+    borderRadius: radius.md,
+    backgroundColor: "rgba(0,0,0,0.10)",
+    borderWidth: 1,
+    borderColor: "rgba(0,0,0,0.08)",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  welcomePrimaryText: { ...text.titleM, fontSize: 14, color: colors.ink },
+  welcomeSecondary: {
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.lg,
+    borderRadius: radius.md,
+    backgroundColor: "rgba(255,255,255,0.70)",
+    borderWidth: 1,
+    borderColor: "rgba(0,0,0,0.06)",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  welcomeSecondaryText: { ...text.label, color: colors.inkSoft },
 
   errorPill: {
     marginTop: spacing.md,
@@ -931,6 +1018,9 @@ const styles = StyleSheet.create({
   categoryLabel: { ...text.label, color: colors.inkSoft },
   categoryValue: { ...text.hint, color: colors.inkMuted, textAlign: "right" },
 
+  emptyStackTitle: { ...text.body, color: colors.inkMuted },
+  emptyStackSub: { ...text.hint, color: colors.inkMuted, marginTop: spacing.xs },
+
   viewPositionsBtn: {
     marginTop: spacing.lg,
     paddingVertical: spacing.md,
@@ -944,20 +1034,6 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
   },
   viewPositionsText: { ...text.label, color: colors.inkSoft },
-
-  expandBtn: {
-    marginTop: spacing.lg,
-    paddingVertical: spacing.md,
-    paddingHorizontal: spacing.lg,
-    borderRadius: radius.md,
-    backgroundColor: "rgba(255,255,255,0.62)",
-    borderWidth: 1,
-    borderColor: "rgba(0,0,0,0.06)",
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  expandText: { ...text.label, color: colors.inkSoft },
 
   timelineHeader: {
     ...text.label,
@@ -1053,7 +1129,6 @@ const styles = StyleSheet.create({
   },
   ctaText: { ...text.titleM, fontSize: 16, color: colors.ink },
 
-  // ✅ docked "scroll down" pill
   purchaseNudgeWrap: {
     position: "absolute",
     left: 0,

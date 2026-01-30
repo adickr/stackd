@@ -6,7 +6,7 @@ export default ({ config }: { config: any }) => {
     ...config,
 
     // keep everything you already had in app.json
-    name: "stackd",
+    name: "Stackd",
     slug: "stackd",
     scheme: "stackd",
     version: "1.0.0",

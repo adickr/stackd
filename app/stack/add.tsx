@@ -13,15 +13,19 @@ import {
   ScrollView,
   Modal,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import DateTimePicker from "@react-native-community/datetimepicker";
+import { Ionicons } from "@expo/vector-icons";
+
 
 import { useCoinStore } from "../../src/stores/coinStore";
 import { useStackStore } from "../../src/stores/stackStore";
 import { useSettingsStore } from "../../src/stores/settingsStore";
 import type { DisplayCurrency } from "../../src/stores/settingsStore";
 import type { StackCategory } from "../../src/domain/stackEntry";
+
+import { colors, spacing, radius, text } from "../../src/theme/tokens";
 
 function parseNumber(input: string) {
   const normalized = input.trim().replace(",", ".");
@@ -54,6 +58,7 @@ function asStackCategory(x: any, fallback: StackCategory): StackCategory {
 
 export default function AddStackEntry() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const params = useLocalSearchParams<{ coinTypeId?: string; entryId?: string }>();
 
   const seedIfEmpty = useCoinStore((s) => s.seedIfEmpty);
@@ -74,7 +79,6 @@ export default function AddStackEntry() {
   const [paid, setPaid] = useState("");
   const [isGift, setIsGift] = useState(false);
 
-  // ✅ Paid currency is DisplayCurrency (same union as settings)
   const [paidCurrency, setPaidCurrency] = useState<DisplayCurrency>(
     asDisplayCurrency(settingsCurrency, "USD")
   );
@@ -112,7 +116,7 @@ export default function AddStackEntry() {
 
   // For brand new entries, default paid currency to current settings
   useEffect(() => {
-    if (existing) return; // don't override edit mode
+    if (existing) return;
     setPaidCurrency(asDisplayCurrency(settingsCurrency, "USD"));
   }, [settingsCurrency, existing]);
 
@@ -189,28 +193,30 @@ export default function AddStackEntry() {
   };
 
   const title = entryId ? "Edit purchase" : "Stack";
-  const subtitle = entryId ? "Update a purchase in your stack." : "Add a purchase to your stack.";
+  const subtitle = entryId ? "Update a purchase." : "Add a purchase.";
 
-  // Nice placeholder per currency (tiny UX win)
   const paidPlaceholder =
     paidCurrency === "USD"
-      ? "e.g. 120"
+      ? "120"
       : paidCurrency === "EUR"
-        ? "e.g. 110"
-        : paidCurrency === "GBP"
-          ? "e.g. 95"
-          : "e.g. 450";
+      ? "110"
+      : paidCurrency === "GBP"
+      ? "95"
+      : "450";
 
   const categoryLabel = useMemo(() => {
     return CATEGORIES.find((c) => c.key === category)?.label ?? "Other";
   }, [category]);
 
+  // Sticky footer height (keeps button visible + prevents cutoff)
+  const FOOTER_H = 72;
+
   return (
-    <SafeAreaView style={styles.safe} edges={["top"]}>
+    <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
       <KeyboardAvoidingView
         style={{ flex: 1 }}
         behavior={Platform.OS === "ios" ? "padding" : "height"}
-        keyboardVerticalOffset={Platform.OS === "ios" ? 6 : 0}
+        keyboardVerticalOffset={Platform.OS === "ios" ? 8 : 0}
       >
         {/* Tap-anywhere-to-dismiss wrapper */}
         <Pressable
@@ -221,32 +227,47 @@ export default function AddStackEntry() {
           }}
           accessible={false}
         >
-          <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
-            <Text style={styles.title}>{title}</Text>
-            <Text style={styles.subtitle}>{subtitle}</Text>
+          <ScrollView
+            contentContainerStyle={[
+              styles.container,
+              { paddingBottom: FOOTER_H + insets.bottom + spacing.lg },
+            ]}
+            keyboardShouldPersistTaps="handled"
+          >
+            {/* Header row (compact) */}
+            <View style={styles.headerRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.title}>{title}</Text>
+                <Text style={styles.subtitle}>{subtitle}</Text>
+              </View>
 
-            {/* Back */}
-            <Pressable
-              onPress={() => {
-                Keyboard.dismiss();
-                router.back();
-              }}
-              style={({ pressed }) => [styles.backPill, pressed && { opacity: 0.85 }]}
-              hitSlop={8}
-            >
-              <Text style={styles.backPillText}>← Back</Text>
-            </Pressable>
+              <Pressable
+                onPress={() => {
+                  Keyboard.dismiss();
+                  router.back();
+                }}
+                style={({ pressed }) => [styles.backPill, pressed && { opacity: 0.85 }]}
+                hitSlop={8}
+              >
+                <Text style={styles.backPillText}>Back</Text>
+              </Pressable>
+            </View>
 
-            {/* Coin picker */}
+            {/* Coin (single compact card) */}
             <Pressable
               onPress={() => {
                 Keyboard.dismiss();
                 router.push("/coins/picker");
               }}
-              style={({ pressed }) => [styles.card, pressed && { opacity: 0.9 }]}
+              style={({ pressed }) => [styles.card, pressed && { opacity: 0.92 }]}
             >
-              <Text style={styles.label}>Coin</Text>
+              <View style={styles.cardTopRow}>
+                <Text style={styles.label}>Coin</Text>
+                <Text style={styles.pickHint}>{coin ? "Change" : "Pick"}</Text>
+              </View>
+
               <Text style={styles.valueText}>{coin ? coin.name : "Pick a coin"}</Text>
+
               {coin ? (
                 <Text style={styles.muted}>
                   Purity {coin.purity} • Fine {coin.fineWeightGrams} g
@@ -254,36 +275,76 @@ export default function AddStackEntry() {
               ) : null}
             </Pressable>
 
-            {/* Quantity */}
-            <Text style={styles.label}>Quantity</Text>
-            <TextInput
-              placeholder="e.g. 1"
-              placeholderTextColor="#777"
-              keyboardType="numeric"
-              value={qty}
-              onChangeText={setQty}
-              style={styles.input}
-              returnKeyType="done"
-            />
+            {/* Row: Qty + Category */}
+            <View style={styles.row}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.label}>Qty</Text>
+                <TextInput
+                  placeholder="1"
+                  placeholderTextColor="rgba(0,0,0,0.45)"
+                  keyboardType="numeric"
+                  value={qty}
+                  onChangeText={setQty}
+                  style={styles.input}
+                  returnKeyType="done"
+                />
+              </View>
 
-            {/* Category */}
-            <Text style={styles.label}>Category</Text>
-            <Pressable
-              onPress={() => {
-                Keyboard.dismiss();
-                setCategoryPickerOpen(true);
-              }}
-              style={({ pressed }) => [
-                styles.input,
-                styles.pickerInput,
-                pressed && { opacity: 0.9 },
-              ]}
-            >
-              <Text style={styles.valueText}>{categoryLabel}</Text>
-              <Text style={styles.chevron}>▾</Text>
-            </Pressable>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.label}>Category</Text>
+                <Pressable
+                  onPress={() => {
+                    Keyboard.dismiss();
+                    setCategoryPickerOpen(true);
+                  }}
+                  style={({ pressed }) => [
+                    styles.input,
+                    styles.pickerInput,
+                    pressed && { opacity: 0.92 },
+                  ]}
+                >
+                  <Text style={styles.valueText}>{categoryLabel}</Text>
+                  <Text style={styles.chevron}>▾</Text>
+                </Pressable>
+              </View>
+            </View>
 
-            {/* Gift toggle */}
+            {/* Row: Currency + Total paid */}
+            <View style={styles.row}>
+              <View style={{ width: 96 }}>
+                <Text style={styles.label}>Curr</Text>
+                <Pressable
+                  onPress={() => {
+                    Keyboard.dismiss();
+                    setCurrencyPickerOpen(true);
+                  }}
+                  style={({ pressed }) => [
+                    styles.input,
+                    styles.pickerInput,
+                    pressed && { opacity: 0.92 },
+                  ]}
+                >
+                  <Text style={styles.valueText}>{paidCurrency}</Text>
+                  <Text style={styles.chevron}>▾</Text>
+                </Pressable>
+              </View>
+
+              <View style={{ flex: 1 }}>
+                <Text style={styles.label}>Total paid</Text>
+                <TextInput
+                  placeholder={isGift ? "Gift" : paidPlaceholder}
+                  placeholderTextColor="rgba(0,0,0,0.45)"
+                  keyboardType="numeric"
+                  value={isGift ? "" : paid}
+                  onChangeText={setPaid}
+                  style={[styles.input, isGift && styles.inputDisabled]}
+                  editable={!isGift}
+                  returnKeyType="done"
+                />
+              </View>
+            </View>
+
+            {/* Gift toggle (compact) */}
             <Pressable
               onPress={() => {
                 setIsGift((v) => {
@@ -295,53 +356,21 @@ export default function AddStackEntry() {
               style={({ pressed }) => [
                 styles.giftToggle,
                 isGift && styles.giftToggleOn,
-                pressed && { opacity: 0.9 },
+                pressed && { opacity: 0.92 },
               ]}
               hitSlop={6}
             >
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 10, flex: 1 }}>
                 <Text style={[styles.giftCheckbox, isGift && styles.giftCheckboxOn]}>
                   {isGift ? "✓" : ""}
                 </Text>
-                <View style={{ gap: 2 }}>
-                  <Text style={styles.giftTitle}>Gift</Text>
-                  <Text style={styles.giftSub}>Mark this purchase as a gift (paid = 0)</Text>
-                </View>
+                <Text style={styles.giftTitle}>Gift (paid = 0)</Text>
               </View>
+              <Text style={styles.giftRight}>{isGift ? "On" : "Off"}</Text>
             </Pressable>
 
-            {/* Paid currency picker */}
-            <Text style={styles.label}>Paid currency</Text>
-            <Pressable
-              onPress={() => {
-                Keyboard.dismiss();
-                setCurrencyPickerOpen(true);
-              }}
-              style={({ pressed }) => [
-                styles.input,
-                styles.pickerInput,
-                pressed && { opacity: 0.9 },
-              ]}
-            >
-              <Text style={styles.valueText}>{paidCurrency}</Text>
-              <Text style={styles.chevron}>▾</Text>
-            </Pressable>
-
-            {/* Paid */}
-            <Text style={styles.label}>Total paid ({paidCurrency})</Text>
-            <TextInput
-              placeholder={isGift ? "Gift" : paidPlaceholder}
-              placeholderTextColor="#777"
-              keyboardType="numeric"
-              value={isGift ? "" : paid}
-              onChangeText={setPaid}
-              style={[styles.input, isGift && styles.inputDisabled]}
-              editable={!isGift}
-              returnKeyType="done"
-            />
-
-            {/* Date picker */}
-            <View style={styles.dateBlock}>
+            {/* Date (compact) */}
+            <View style={styles.dateRow}>
               <Text style={styles.label}>Date</Text>
 
               <Pressable
@@ -349,57 +378,67 @@ export default function AddStackEntry() {
                   Keyboard.dismiss();
                   setShowPicker(true);
                 }}
-                style={({ pressed }) => [styles.input, pressed && { opacity: 0.9 }]}
+                style={({ pressed }) => [styles.input, styles.dateInput, pressed && { opacity: 0.92 }]}
               >
                 <Text style={styles.valueText}>{ymdFromDate(pickedDate)}</Text>
+                <Ionicons
+                  name="calendar-outline"
+                  size={16}
+                  color={colors.ink}
+                  style={{ opacity: 0.55 }}
+                />
               </Pressable>
 
               {showPicker ? (
-                <DateTimePicker
-                  value={pickedDate}
-                  mode="date"
-                  display={Platform.OS === "ios" ? "spinner" : "default"}
-                  onChange={(event, date) => {
-                    if (Platform.OS !== "ios") setShowPicker(false);
-                    if (date) setPickedDate(date);
-                  }}
-                />
-              ) : null}
+                <View style={{ marginTop: spacing.sm }}>
+                  <DateTimePicker
+                    value={pickedDate}
+                    mode="date"
+                    display={Platform.OS === "ios" ? "spinner" : "default"}
+                    onChange={(event, date) => {
+                      if (Platform.OS !== "ios") setShowPicker(false);
+                      if (date) setPickedDate(date);
+                    }}
+                  />
 
-              {Platform.OS === "ios" && showPicker ? (
-                <Pressable
-                  onPress={() => setShowPicker(false)}
-                  style={({ pressed }) => [styles.primaryBtn, pressed && { opacity: 0.9 }]}
-                >
-                  <Text style={styles.primaryText}>Done</Text>
-                </Pressable>
+                  {Platform.OS === "ios" ? (
+                    <Pressable
+                      onPress={() => setShowPicker(false)}
+                      style={({ pressed }) => [styles.inlineDone, pressed && { opacity: 0.9 }]}
+                    >
+                      <Text style={styles.inlineDoneText}>Done</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
               ) : null}
             </View>
-
-            {/* Save */}
-            <Pressable
-              onPress={save}
-              disabled={!canSave}
-              style={({ pressed }) => [
-                styles.saveBtn,
-                !canSave && styles.saveBtnDisabled,
-                pressed && canSave && { opacity: 0.9 },
-              ]}
-            >
-              <Text style={styles.saveText}>{entryId ? "Save changes" : "Stack"}</Text>
-            </Pressable>
 
             {/* Delete (edit mode only) */}
             {entryId ? (
               <Pressable
                 onPress={confirmDelete}
-                style={({ pressed }) => [styles.deleteBtn, pressed && { opacity: 0.9 }]}
+                style={({ pressed }) => [styles.deleteBtn, pressed && { opacity: 0.92 }]}
               >
                 <Text style={styles.deleteText}>Delete purchase</Text>
               </Pressable>
             ) : null}
           </ScrollView>
         </Pressable>
+
+        {/* Sticky footer save (prevents cutoff + feels lighter) */}
+        <View style={[styles.footer, { paddingBottom: Math.max(10, insets.bottom) }]}>
+          <Pressable
+            onPress={save}
+            disabled={!canSave}
+            style={({ pressed }) => [
+              styles.saveBtn,
+              !canSave && styles.saveBtnDisabled,
+              pressed && canSave && { opacity: 0.92 },
+            ]}
+          >
+            <Text style={styles.saveText}>{entryId ? "Save" : "Stack"}</Text>
+          </Pressable>
+        </View>
 
         {/* Currency picker modal */}
         <Modal
@@ -410,7 +449,7 @@ export default function AddStackEntry() {
         >
           <View style={styles.modalOverlay}>
             <View style={styles.modalCard}>
-              <Text style={styles.modalTitle}>Choose currency</Text>
+              <Text style={styles.modalTitle}>Currency</Text>
 
               {CURRENCIES.map((c) => {
                 const active = c === paidCurrency;
@@ -424,7 +463,7 @@ export default function AddStackEntry() {
                     style={({ pressed }) => [
                       styles.modalRow,
                       active && styles.modalRowActive,
-                      pressed && { opacity: 0.9 },
+                      pressed && { opacity: 0.92 },
                     ]}
                   >
                     <Text style={[styles.modalRowText, active && { opacity: 0.95 }]}>
@@ -437,7 +476,7 @@ export default function AddStackEntry() {
 
               <Pressable
                 onPress={() => setCurrencyPickerOpen(false)}
-                style={({ pressed }) => [styles.modalCancel, pressed && { opacity: 0.9 }]}
+                style={({ pressed }) => [styles.modalCancel, pressed && { opacity: 0.92 }]}
               >
                 <Text style={styles.modalCancelText}>Cancel</Text>
               </Pressable>
@@ -454,7 +493,7 @@ export default function AddStackEntry() {
         >
           <View style={styles.modalOverlay}>
             <View style={styles.modalCard}>
-              <Text style={styles.modalTitle}>Choose category</Text>
+              <Text style={styles.modalTitle}>Category</Text>
 
               {CATEGORIES.map((c) => {
                 const active = c.key === category;
@@ -468,7 +507,7 @@ export default function AddStackEntry() {
                     style={({ pressed }) => [
                       styles.modalRow,
                       active && styles.modalRowActive,
-                      pressed && { opacity: 0.9 },
+                      pressed && { opacity: 0.92 },
                     ]}
                   >
                     <Text style={[styles.modalRowText, active && { opacity: 0.95 }]}>
@@ -481,7 +520,7 @@ export default function AddStackEntry() {
 
               <Pressable
                 onPress={() => setCategoryPickerOpen(false)}
-                style={({ pressed }) => [styles.modalCancel, pressed && { opacity: 0.9 }]}
+                style={({ pressed }) => [styles.modalCancel, pressed && { opacity: 0.92 }]}
               >
                 <Text style={styles.modalCancelText}>Cancel</Text>
               </Pressable>
@@ -494,58 +533,77 @@ export default function AddStackEntry() {
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: "#fff" },
+  safe: { flex: 1, backgroundColor: colors.surface },
 
   container: {
     flexGrow: 1,
-    padding: 24,
-    gap: 14,
-    paddingBottom: 32,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.md,
+    gap: spacing.sm, // tighter
   },
 
-  title: { fontSize: 24, fontWeight: "900" },
-  subtitle: { color: "#444" },
+  headerRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: spacing.md,
+    marginBottom: spacing.xs,
+  },
+
+  title: { ...text.titleM, fontSize: 20, color: colors.ink },
+  subtitle: { ...text.hint, color: colors.inkMuted, marginTop: 2 },
 
   backPill: {
     alignSelf: "flex-start",
-    paddingHorizontal: 12,
+    paddingHorizontal: 10,
     paddingVertical: 7,
-    borderRadius: 999,
-    backgroundColor: "rgba(0,0,0,0.05)",
+    borderRadius: radius.pill,
+    backgroundColor: colors.surfaceSoft,
     borderWidth: 1,
-    borderColor: "rgba(0,0,0,0.12)",
+    borderColor: colors.border,
   },
-  backPillText: { fontSize: 13, fontWeight: "800", opacity: 0.75 },
+  backPillText: { ...text.label, color: colors.inkSoft },
 
   card: {
     borderWidth: 1,
-    borderColor: "#eee",
-    borderRadius: 14,
-    padding: 14,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    padding: spacing.md,
     gap: 6,
+    backgroundColor: "rgba(255,255,255,0.70)", // matches your frosted vibe
   },
 
-  label: {
-    fontSize: 12,
-    fontWeight: "800",
-    opacity: 0.7,
-    marginTop: 2,
+  cardTopRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "baseline",
   },
 
-  valueText: { fontWeight: "700", color: "#111" },
-  muted: { color: "#555" },
+  label: { ...text.label, color: colors.inkSoft },
+
+  pickHint: { ...text.hint, color: colors.inkMuted, textAlign: "right" },
+
+  valueText: { ...text.body, fontWeight: "800", color: colors.ink },
+  muted: { ...text.hint, color: colors.inkMuted },
+
+  row: {
+    flexDirection: "row",
+    gap: spacing.md,
+    alignItems: "flex-end",
+  },
 
   input: {
     borderWidth: 1,
-    borderColor: "#ddd",
-    padding: 12,
-    borderRadius: 12,
-    backgroundColor: "#fff",
-    color: "#111",
+    borderColor: colors.border,
+    paddingVertical: 10, // tighter
+    paddingHorizontal: 12,
+    borderRadius: radius.sm,
+    backgroundColor: colors.surface,
+    color: colors.ink,
+    ...text.body,
   },
 
   inputDisabled: {
-    backgroundColor: "rgba(0,0,0,0.04)",
+    backgroundColor: colors.surfaceSoft,
     borderColor: "rgba(0,0,0,0.10)",
     color: "rgba(0,0,0,0.55)",
   },
@@ -554,17 +612,22 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    gap: spacing.sm,
   },
-  chevron: { fontSize: 16, opacity: 0.5, fontWeight: "800" },
+  chevron: { fontSize: 16, color: colors.inkMuted, fontWeight: "900" },
 
   giftToggle: {
-    marginTop: 2,
+    marginTop: spacing.xs,
     borderWidth: 1,
-    borderColor: "rgba(0,0,0,0.10)",
-    borderRadius: 14,
-    paddingVertical: 12,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    paddingVertical: 10,
     paddingHorizontal: 12,
-    backgroundColor: "rgba(0,0,0,0.04)",
+    backgroundColor: colors.surfaceSoft,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.md,
   },
   giftToggleOn: {
     backgroundColor: "rgba(0,0,0,0.07)",
@@ -580,44 +643,61 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     fontWeight: "900",
     opacity: 0.9,
+    textAlign: "center",
+    textAlignVertical: "center",
   },
   giftCheckboxOn: {
     backgroundColor: "rgba(0,0,0,0.10)",
     borderColor: "rgba(0,0,0,0.28)",
   },
-  giftTitle: { fontSize: 14, fontWeight: "900", color: "#111" },
-  giftSub: { fontSize: 12, color: "#555", fontWeight: "600" },
+  giftTitle: { ...text.body, fontWeight: "800", color: colors.ink },
+  giftRight: { ...text.hint, color: colors.inkMuted },
 
-  dateBlock: { gap: 10, marginTop: 6 },
+  dateRow: { marginTop: spacing.xs, gap: spacing.xs },
+  dateInput: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
 
-  primaryBtn: {
-    backgroundColor: "#111",
+  inlineDone: {
+    marginTop: spacing.sm,
     paddingVertical: 10,
-    borderRadius: 12,
+    borderRadius: radius.sm,
     alignItems: "center",
+    backgroundColor: "rgba(0,0,0,0.10)",
+    borderWidth: 1,
+    borderColor: "rgba(0,0,0,0.08)",
   },
-  primaryText: { color: "#fff", fontWeight: "800" },
-
-  saveBtn: {
-    backgroundColor: "#111",
-    paddingVertical: 12,
-    borderRadius: 12,
-    alignItems: "center",
-    marginTop: 6,
-  },
-  saveBtnDisabled: { backgroundColor: "#999" },
-  saveText: { color: "#fff", fontWeight: "800" },
+  inlineDoneText: { ...text.label, color: colors.ink },
 
   deleteBtn: {
-    marginTop: 8,
+    marginTop: spacing.md,
     borderWidth: 1,
     borderColor: "rgba(220,0,0,0.25)",
     backgroundColor: "rgba(220,0,0,0.06)",
     paddingVertical: 12,
-    borderRadius: 12,
+    borderRadius: radius.md,
     alignItems: "center",
   },
-  deleteText: { color: "#b00020", fontWeight: "900" },
+  deleteText: { ...text.label, color: colors.danger },
+
+  footer: {
+    borderTopWidth: 1,
+    borderTopColor: "rgba(0,0,0,0.06)",
+    backgroundColor: "rgba(255,255,255,0.92)",
+    paddingHorizontal: spacing.lg,
+    paddingTop: 10,
+  },
+
+  saveBtn: {
+    backgroundColor: "rgba(0,0,0,0.14)",
+    paddingVertical: 14,
+    borderRadius: radius.lg,
+    alignItems: "center",
+  },
+  saveBtnDisabled: { backgroundColor: "rgba(0,0,0,0.06)" },
+  saveText: { ...text.titleM, fontSize: 16, color: colors.ink },
 
   // Modal
   modalOverlay: {
@@ -627,29 +707,31 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   modalCard: {
-    borderRadius: 18,
-    backgroundColor: "#fff",
+    borderRadius: radius.lg,
+    backgroundColor: colors.surface,
     padding: 16,
+    borderWidth: 1,
+    borderColor: "rgba(0,0,0,0.08)",
   },
-  modalTitle: { fontSize: 16, fontWeight: "900", opacity: 0.9 },
+  modalTitle: { ...text.titleM, fontSize: 16, color: colors.ink, opacity: 0.95 },
 
   modalRow: {
     marginTop: 10,
-    borderRadius: 14,
+    borderRadius: radius.md,
     paddingVertical: 12,
     paddingHorizontal: 12,
-    backgroundColor: "rgba(0,0,0,0.06)",
+    backgroundColor: colors.surfaceSoft,
   },
   modalRowActive: { backgroundColor: "rgba(0,0,0,0.12)" },
-  modalRowText: { fontSize: 14, fontWeight: "900", opacity: 0.8 },
+  modalRowText: { ...text.body, fontSize: 14, fontWeight: "900", color: colors.inkSoft },
 
   modalCancel: {
     marginTop: 12,
-    borderRadius: 14,
+    borderRadius: radius.md,
     paddingVertical: 12,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "rgba(0,0,0,0.08)",
   },
-  modalCancelText: { fontSize: 14, fontWeight: "900", opacity: 0.85 },
+  modalCancelText: { ...text.body, fontWeight: "900", color: colors.inkSoft },
 });
