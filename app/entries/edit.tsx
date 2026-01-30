@@ -73,6 +73,8 @@ export default function AddStackEntry() {
       coinTypeId,
       quantity: qtyNum,
       totalPaid: paidNum,
+      paidCurrency: "ZAR",
+      category: "bullion",
       purchasedAt,
     });
 
