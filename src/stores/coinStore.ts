@@ -22,15 +22,17 @@ type CoinState = {
   coins: CoinType[];
   hasHydrated: boolean;
 
+  // seeds
   seedIfEmpty: () => void;
   forceResetToSeeds: () => void;
+
+  // ✅ clearer alias for UI buttons
+  restoreDefaults: () => void;
 
   getCoin: (id?: string) => CoinType | undefined;
   upsertCoin: (coin: CoinType) => void;
 
-  createCoin: (
-    input: Omit<CoinType, "id" | "createdAt"> & { id?: string }
-  ) => CoinType;
+  createCoin: (input: Omit<CoinType, "id" | "createdAt"> & { id?: string }) => CoinType;
 
   searchCoins: (query: string) => CoinType[];
   clearAll: () => void;
@@ -38,7 +40,7 @@ type CoinState = {
   // existing (kept)
   replaceAll: (coins: CoinType[]) => void;
 
-  // ✅ NEW: safe replace that validates + returns report
+  // ✅ safe replace that validates + returns report
   safeReplaceAll: (coins: unknown, opts?: SafeReplaceOptions) => ReplaceReport;
 };
 
@@ -47,9 +49,7 @@ type CoinState = {
 const now = () => Date.now();
 
 function makeId(prefix = "custom") {
-  return `${prefix}_${Date.now().toString(36)}_${Math.random()
-    .toString(36)
-    .slice(2, 8)}`;
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
 function norm(s: string) {
@@ -60,9 +60,7 @@ function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
 }
 
-function validateCoinInput(
-  c: Pick<CoinType, "name" | "purity" | "fineWeightGrams">
-) {
+function validateCoinInput(c: Pick<CoinType, "name" | "purity" | "fineWeightGrams">) {
   if (!c.name.trim()) throw new Error("Name is required.");
   if (!Number.isFinite(c.purity) || c.purity <= 0 || c.purity > 1) {
     throw new Error("Purity must be between 0 and 1 (e.g. 0.999).");
@@ -74,8 +72,9 @@ function validateCoinInput(
 }
 
 function normalizeCoin(raw: any): CoinType {
-  // allow older payloads missing createdAt etc
-  const name = String(raw?.name ?? "").trim().replace(/\s+/g, " ");
+  const name = String(raw?.name ?? "")
+    .trim()
+    .replace(/\s+/g, " ");
   const purity = clamp(Number(raw?.purity ?? 0), 0, 1);
   const fineWeightGrams = clamp(Number(raw?.fineWeightGrams ?? 0), 0, 50_000);
 
@@ -86,7 +85,11 @@ function normalizeCoin(raw: any): CoinType {
     metal: raw?.metal ?? "silver",
     purity,
     fineWeightGrams,
-    hallmarks: Array.isArray(raw?.hallmarks) ? raw.hallmarks.map(String) : raw?.hallmarks ? [String(raw.hallmarks)] : undefined,
+    hallmarks: Array.isArray(raw?.hallmarks)
+      ? raw.hallmarks.map(String)
+      : raw?.hallmarks
+      ? [String(raw.hallmarks)]
+      : undefined,
     notes: typeof raw?.notes === "string" ? raw.notes : undefined,
   };
 
@@ -95,12 +98,31 @@ function normalizeCoin(raw: any): CoinType {
 }
 
 /* ---------------- seed coins ---------------- */
-
+/**
+ * IMPORTANT:
+ * If this array is empty, new users WILL have an empty coin library
+ * and “Restore default coins” will do nothing.
+ *
+ * Expand this list as you like. Keep ids stable so backups/migrations are reliable.
+ */
 const seedCoins: CoinType[] = [
-  // ... (UNCHANGED: your seed list)
+  // 1 oz (fine silver)
+  { id: "seed_silver_krugerrand_1oz", createdAt: 1, name: "Silver Krugerrand 1 oz", metal: "silver", purity: 0.999, fineWeightGrams: 31.1035 },
+  { id: "seed_silver_maple_1oz", createdAt: 1, name: "Canadian Maple Leaf 1 oz", metal: "silver", purity: 0.9999, fineWeightGrams: 31.1035 },
+  { id: "seed_silver_eagle_1oz", createdAt: 1, name: "American Silver Eagle 1 oz", metal: "silver", purity: 0.999, fineWeightGrams: 31.1035 },
+  { id: "seed_silver_philharmonic_1oz", createdAt: 1, name: "Austrian Philharmonic 1 oz", metal: "silver", purity: 0.999, fineWeightGrams: 31.1035 },
+  { id: "seed_silver_britannia_1oz", createdAt: 1, name: "Britannia 1 oz", metal: "silver", purity: 0.999, fineWeightGrams: 31.1035 },
+  { id: "seed_silver_kookaburra_1oz", createdAt: 1, name: "Kookaburra 1 oz", metal: "silver", purity: 0.999, fineWeightGrams: 31.1035 },
+  { id: "seed_silver_kangaroo_1oz", createdAt: 1, name: "Kangaroo 1 oz", metal: "silver", purity: 0.9999, fineWeightGrams: 31.1035 },
+
+  // Common bars
+  { id: "seed_silver_bar_100g", createdAt: 1, name: "Silver Bar 100 g", metal: "silver", purity: 0.999, fineWeightGrams: 100 },
+  { id: "seed_silver_bar_250g", createdAt: 1, name: "Silver Bar 250 g", metal: "silver", purity: 0.999, fineWeightGrams: 250 },
+  { id: "seed_silver_bar_500g", createdAt: 1, name: "Silver Bar 500 g", metal: "silver", purity: 0.999, fineWeightGrams: 500 },
+  { id: "seed_silver_bar_1kg", createdAt: 1, name: "Silver Bar 1 kg", metal: "silver", purity: 0.999, fineWeightGrams: 1000 },
 ];
 
-/* ---------------- dedupe (fixes your duplicate ASE) ---------------- */
+/* ---------------- dedupe ---------------- */
 
 function keyForCoin(c: CoinType) {
   return (c.name ?? "").trim().toLowerCase().replace(/\s+/g, " ");
@@ -110,7 +132,6 @@ function dedupeByNamePreferSeeds(all: CoinType[]) {
   const seen = new Set<string>();
   const out: CoinType[] = [];
 
-  // 1) seeds first (preferred)
   for (const s of seedCoins) {
     const k = keyForCoin(s);
     if (!k || seen.has(k)) continue;
@@ -118,7 +139,6 @@ function dedupeByNamePreferSeeds(all: CoinType[]) {
     out.push(s);
   }
 
-  // 2) everything else, skipping same-name duplicates
   for (const c of all) {
     const k = keyForCoin(c);
     if (!k || seen.has(k)) continue;
@@ -201,6 +221,10 @@ export const useCoinStore = create<CoinState>()(
         set({ coins: seedCoins });
       },
 
+      restoreDefaults: () => {
+        set({ coins: seedCoins });
+      },
+
       getCoin: (id) => (id ? get().coins.find((c) => c.id === id) : undefined),
 
       upsertCoin: (coin) =>
@@ -233,9 +257,9 @@ export const useCoinStore = create<CoinState>()(
 
         return get().coins.filter((c) => {
           const hay = norm(
-            `${c.name} ${c.metal ?? ""} ${c.purity} ${c.fineWeightGrams} ${
-              (c.hallmarks ?? []).join(" ")
-            } ${c.notes ?? ""}`
+            `${c.name} ${c.metal ?? ""} ${c.purity} ${c.fineWeightGrams} ${(c.hallmarks ?? []).join(
+              " "
+            )} ${c.notes ?? ""}`
           );
           return hay.includes(q);
         });
@@ -243,13 +267,11 @@ export const useCoinStore = create<CoinState>()(
 
       clearAll: () => set({ coins: [] }),
 
-      // existing (kept)
       replaceAll: (coinsFromBackup) => {
         const merged = mergeSeeds(Array.isArray(coinsFromBackup) ? coinsFromBackup : []);
         set({ coins: merged });
       },
 
-      // ✅ NEW
       safeReplaceAll: (incoming, opts) => {
         const keepSeeds = opts?.keepSeeds ?? true;
         const keepLocalExtras = opts?.keepLocalExtras ?? false;
@@ -262,7 +284,6 @@ export const useCoinStore = create<CoinState>()(
         let next = normalized;
 
         if (keepLocalExtras) {
-          // preserve any local coins not present in incoming (by id)
           const incomingIds = new Set(normalized.map((c) => c.id));
           const extras = current.filter((c) => !incomingIds.has(c.id));
           next = [...normalized, ...extras];
@@ -273,7 +294,6 @@ export const useCoinStore = create<CoinState>()(
 
         set({ coins: next });
 
-        // warning if we overwrote a coin id with different shape
         for (const c of normalized) {
           const prev = currentById.get(c.id);
           if (prev && prev.name !== c.name) {
@@ -301,7 +321,16 @@ export const useCoinStore = create<CoinState>()(
 
       onRehydrateStorage: () => () => {
         useCoinStore.setState({ hasHydrated: true });
-        useCoinStore.getState().seedIfEmpty();
+
+        const s = useCoinStore.getState();
+        const existing = s.coins ?? [];
+
+        if (existing.length === 0) {
+          useCoinStore.setState({ coins: seedCoins });
+          return;
+        }
+
+        s.seedIfEmpty();
       },
     }
   )

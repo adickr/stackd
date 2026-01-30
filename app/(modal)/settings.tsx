@@ -21,6 +21,8 @@ import {
 } from "../../src/stores/settingsStore";
 import { useSpotStore } from "../../src/stores/spotStore";
 import { useAccountStore } from "../../src/stores/accountStore";
+import { useStackStore } from "../../src/stores/stackStore";
+import { useCoinStore } from "../../src/stores/coinStore";
 
 import {
   publishEncryptedSnapshot,
@@ -65,7 +67,6 @@ function isRateLimited(err: any) {
 
   const msg = raw.toLowerCase();
 
-  // Common signatures
   if (msg.includes("429")) return true;
   if (msg.includes("too many requests")) return true;
   if (msg.includes("rate limit")) return true;
@@ -119,15 +120,11 @@ export default function SettingsScreen() {
     (s) => (s as any).setCloudBackupState
   );
 
+  // ✅ We keep refreshSpot available for currency picker validation,
+  // but we do NOT auto-fetch spot in settings anymore.
   const refreshSpot = useSpotStore((s) => s.refreshSpot);
   const spotLoading = useSpotStore((s) => s.isLoading);
-  const spotError = useSpotStore((s) => s.error);
-
-  // ✅ NEW: we can now read per-gram too (derived in spotStore)
   const perOzByCurrency = useSpotStore((s) => s.silverPerOzByCurrency);
-  const perGramByCurrency = useSpotStore(
-    (s) => (s as any).silverPerGramByCurrency as Record<string, number> | undefined
-  );
 
   const isConnected = useAccountStore((s) => s.isConnected);
   const walletAddressB64 = useAccountStore((s) => s.walletAddressB64);
@@ -138,6 +135,13 @@ export default function SettingsScreen() {
   const signMessage = useAccountStore((s) => s.signMessage);
   const signMessagesMaybe = useAccountStore((s) => (s as any).signMessages);
 
+  // ✅ local stack state (so we can hide backup when empty)
+  const entries = useStackStore((s) => s.entries);
+  const hasLocalData = (entries?.length ?? 0) > 0;
+
+  // ✅ coin seeding helper (prevents empty library after restore/import)
+  const seedCoinsIfEmpty = useCoinStore((s) => s.seedIfEmpty);
+
   // Credits
   const credits = useAccountStore((s) => (s as any).credits as number | undefined);
   const refreshCredits = useAccountStore(
@@ -147,9 +151,8 @@ export default function SettingsScreen() {
   const [cloudBusy, setCloudBusy] = useState<CloudBusyMode>("idle");
   const [cloudBusyText, setCloudBusyText] = useState<string>("");
 
-  // cloud state
   const [checkingCloud, setCheckingCloud] = useState(false);
-  const [cloudResolved, setCloudResolved] = useState(false); // ✅ gate UI
+  const [cloudResolved, setCloudResolved] = useState(false); // gate UI
   const [backupSynced, setBackupSynced] = useState(false);
   const [backupMsg, setBackupMsg] = useState<string>("");
 
@@ -159,12 +162,6 @@ export default function SettingsScreen() {
 
   const resolveSeq = useRef(0);
   const lastWalletRef = useRef<string | null>(null);
-
-  // Pre-fetch spot once
-  useEffect(() => {
-    refreshSpot().catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   // Register signer + wallet context for cloud flows
   useEffect(() => {
@@ -211,52 +208,31 @@ export default function SettingsScreen() {
     refreshCredits().catch(() => {});
   }, [isConnected, walletAddressB58, refreshCredits]);
 
-  // ✅ Core resolve: latest + localHash compare (with seq guard)
   const syncBackupUi = async (reason: string) => {
     const seq = ++resolveSeq.current;
 
-    console.log("[cloud] resolve start", {
-      reason,
-      seq,
-      isConnected,
-      walletAddressB58,
-    });
-
-    // while resolving, gate UI
     setCloudResolved(false);
     setCheckingCloud(true);
 
-    // if not connected, reset everything deterministically
     if (!isConnected || !walletAddressB58) {
       setBackupSynced(false);
       setBackupMsg("");
       setCloudBackupState?.({ hasCloudBackup: false, lastCloudBackupAt: null });
       setCheckingCloud(false);
       setCloudResolved(true);
-      console.log("[cloud] resolve end (not connected)", { seq });
       return;
     }
 
     try {
-      // kick credits refresh, but don't block
       if (typeof refreshCredits === "function") refreshCredits().catch(() => {});
 
       const cloud = await checkCloudBackupExists();
       if (seq !== resolveSeq.current) return;
 
-      console.log(
-        "[cloud] latest",
-        cloud.exists
-          ? { exists: true, snapshotHash: cloud.snapshotHash }
-          : { exists: false }
-      );
-
       if (!cloud.exists || !cloud.snapshotHash) {
         setBackupSynced(false);
         setBackupMsg("");
         setCloudBackupState?.({ hasCloudBackup: false, lastCloudBackupAt: null });
-
-        console.log("[cloud] resolve end (no remote)", { seq });
         return;
       }
 
@@ -271,12 +247,9 @@ export default function SettingsScreen() {
         hasCloudBackup: true,
         lastCloudBackupAt: typeof cloud.createdAt === "number" ? cloud.createdAt : null,
       });
-
-      console.log("[cloud] resolve end", { seq, matches });
     } catch (e: any) {
       if (seq !== resolveSeq.current) return;
-      console.warn("[cloud] resolve failed", e?.message ?? String(e));
-      // fail closed: keep action gated until next resolve
+      // keep it quiet; UI stays usable
     } finally {
       if (seq === resolveSeq.current) {
         setCheckingCloud(false);
@@ -285,11 +258,9 @@ export default function SettingsScreen() {
     }
   };
 
-  // ✅ IMPORTANT: resolve on reconnect / wallet change
   useEffect(() => {
     const w = walletAddressB58 ?? null;
 
-    // if disconnected, hard reset and mark resolved
     if (!isConnected || !w) {
       lastWalletRef.current = null;
       setBackupSynced(false);
@@ -309,7 +280,6 @@ export default function SettingsScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isConnected, walletAddressB58]);
 
-  // Resolve when Settings gains focus too
   useFocusEffect(
     React.useCallback(() => {
       syncBackupUi("focus").catch(() => {});
@@ -331,22 +301,51 @@ export default function SettingsScreen() {
     return { label: "Credits: —", kind: "neutral" as const };
   }, [isConnected, cloudResolved, checkingCloud, credits]);
 
+  // ✅ Decide which primary action this section should show
+  const cloudPrimaryMode = useMemo(() => {
+    if (!isConnected) return "connect" as const;
+    if (!cloudResolved || checkingCloud) return "checking" as const;
+
+    // If empty local stack, prefer restore-only flow
+    if (!hasLocalData) {
+      if (hasCloudBackup) return "restore" as const;
+      return "no-restore" as const;
+    }
+
+    return "backup" as const;
+  }, [isConnected, cloudResolved, checkingCloud, hasLocalData, hasCloudBackup]);
+
   const cloudPrimaryLabel = useMemo(() => {
-    if (!isConnected) return "Connect wallet";
-    if (!cloudResolved || checkingCloud) return "Checking…";
-    if (cloudBusy !== "idle") return cloudBusy === "backup" ? "Backing up…" : "Working…";
+    if (cloudPrimaryMode === "connect") return "Connect wallet";
+    if (cloudPrimaryMode === "checking") return "Checking…";
+
+    if (cloudBusy !== "idle") {
+      if (cloudBusy === "backup") return "Backing up…";
+      if (cloudBusy === "restore") return "Restoring…";
+      return "Working…";
+    }
+
+    if (cloudPrimaryMode === "restore") return "Restore from backup";
+    if (cloudPrimaryMode === "no-restore") return "No backup found";
+
     if (credits === 0) return "No credits";
     if (backupSynced) return "Backed up";
     return hasCloudBackup ? "Back up again" : "Back up now";
-  }, [isConnected, cloudResolved, checkingCloud, cloudBusy, credits, backupSynced, hasCloudBackup]);
+  }, [cloudPrimaryMode, cloudBusy, credits, backupSynced, hasCloudBackup]);
 
   const cloudPrimaryDisabled = useMemo(() => {
-    if (!isConnected) return false; // allow connect flow
-    if (!cloudResolved || checkingCloud) return true; // ✅ gate until resolved
+    if (cloudPrimaryMode === "connect") return false;
+    if (cloudPrimaryMode === "checking") return true;
+
     if (cloudBusy !== "idle") return true;
+
+    if (cloudPrimaryMode === "no-restore") return true;
+
+    if (cloudPrimaryMode === "restore") return !hasCloudBackup;
+
     if (credits === 0) return true;
-    return backupSynced; // ✅ disable if unchanged
-  }, [isConnected, cloudResolved, checkingCloud, cloudBusy, credits, backupSynced]);
+    return backupSynced;
+  }, [cloudPrimaryMode, cloudBusy, credits, backupSynced, hasCloudBackup]);
 
   const handleConnectForCloud = async () => {
     try {
@@ -370,6 +369,14 @@ export default function SettingsScreen() {
       return;
     }
 
+    if (!hasLocalData) {
+      Alert.alert(
+        "Nothing to back up yet",
+        "Add at least one item to your stack before creating a backup."
+      );
+      return;
+    }
+
     if (backupSynced) return;
 
     try {
@@ -378,10 +385,8 @@ export default function SettingsScreen() {
       setBackupMsg("");
 
       const res = await publishEncryptedSnapshot();
-      console.log("[cloud] publish result", res);
 
       await syncBackupUi("post-publish");
-
       if (typeof refreshCredits === "function") await refreshCredits();
 
       if (res.status === "unchanged") {
@@ -411,12 +416,6 @@ export default function SettingsScreen() {
     setRestoreModalVisible(true);
   };
 
-  const closeRestoreModal = () => {
-    if (cloudBusy === "restore") return;
-    setRestoreModalVisible(false);
-    setCloudBusyText("");
-  };
-
   const confirmRestore = async () => {
     if (cloudBusy !== "idle") return;
     if (!isConnected || !walletAddressB58) {
@@ -429,6 +428,10 @@ export default function SettingsScreen() {
       setCloudBusyText("Decrypting locally…");
 
       await restoreLatestEncryptedSnapshot();
+
+      // ✅ If restore overwrote coins (or didn’t include them), ensure defaults exist.
+      seedCoinsIfEmpty();
+
       setRestoreModalVisible(false);
 
       await syncBackupUi("post-restore");
@@ -460,7 +463,6 @@ export default function SettingsScreen() {
         return;
       }
 
-      // If a service underneath threw a rate limit error, keep UX clean
       if (isRateLimited(res as any)) {
         showRateLimitOk();
         return;
@@ -494,6 +496,9 @@ export default function SettingsScreen() {
             return;
           }
 
+          // ✅ Ensure default coin library exists after import
+          seedCoinsIfEmpty();
+
           const report = res.report;
           Alert.alert(
             "Imported",
@@ -505,19 +510,6 @@ export default function SettingsScreen() {
       },
     ]);
   };
-
-  // ✅ NEW: show spot hint in selected unit inside Currency section
-  const spotHint = useMemo(() => {
-    const c = currency;
-    if (unit === "g") {
-      const v = perGramByCurrency?.[c];
-      if (typeof v === "number" && v > 0) return `${c} ${v.toFixed(2)} / g`;
-      return null;
-    }
-    const v = perOzByCurrency?.[c];
-    if (typeof v === "number" && v > 0) return `${c} ${v.toFixed(2)} / oz`;
-    return null;
-  }, [currency, unit, perGramByCurrency, perOzByCurrency]);
 
   return (
     <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
@@ -547,7 +539,6 @@ export default function SettingsScreen() {
             ]}
             onChange={(v) => setUnit(v)}
           />
-          <Text style={styles.helper}>Choose how weights are displayed.</Text>
         </Section>
 
         <Section title="Currency">
@@ -561,12 +552,6 @@ export default function SettingsScreen() {
           >
             <Text style={styles.navText}>Display currency: {currency}</Text>
           </Pressable>
-
-          <Text style={styles.helper}>
-            {spotHint ? `Spot: ${spotHint}. ` : ""}
-            Spot refreshes when you change currency.
-            {spotError ? ` (Spot error: ${spotError})` : ""}
-          </Text>
         </Section>
 
         <Section title="Cloud Backup (Encrypted)">
@@ -583,7 +568,7 @@ export default function SettingsScreen() {
                 ? "Checking backup status…"
                 : hasCloudBackup
                 ? `Last backup: ${formatWhen(lastCloudBackupAt)}`
-                : "Not backed up"}
+                : "No cloud backup found for this wallet"}
             </Text>
 
             {isConnected ? (
@@ -592,19 +577,37 @@ export default function SettingsScreen() {
               </Text>
             ) : null}
 
+            {!hasLocalData && isConnected && cloudResolved && !checkingCloud ? (
+              <Text style={styles.cloudInfo}>
+                Your stack is empty on this device. To avoid overwriting a good backup, Stackd only
+                shows restore in this state.
+              </Text>
+            ) : null}
+
             {backupMsg ? <Text style={styles.cloudMeta}>{backupMsg}</Text> : null}
 
             {cloudBusy !== "idle" ? (
               <View style={styles.cloudProgressRow}>
                 <ActivityIndicator />
-                <Text style={styles.cloudProgressText}>
-                  {cloudBusyText || "Working…"}
-                </Text>
+                <Text style={styles.cloudProgressText}>{cloudBusyText || "Working…"}</Text>
               </View>
             ) : null}
 
             <Pressable
-              onPress={handlePublishCloud}
+              onPress={async () => {
+                if (cloudPrimaryMode === "connect") {
+                  await handleConnectForCloud();
+                  return;
+                }
+                if (cloudPrimaryMode === "restore") {
+                  await openRestoreModal();
+                  return;
+                }
+                if (cloudPrimaryMode === "backup") {
+                  await handlePublishCloud();
+                  return;
+                }
+              }}
               disabled={cloudPrimaryDisabled}
               style={({ pressed }) => [
                 styles.cloudPrimaryBtn,
@@ -615,23 +618,22 @@ export default function SettingsScreen() {
               <Text style={styles.cloudPrimaryText}>{cloudPrimaryLabel}</Text>
             </Pressable>
 
-            {isConnected && hasCloudBackup ? (
-              <Pressable
-                onPress={openRestoreModal}
-                disabled={cloudBusy !== "idle" || !cloudResolved || checkingCloud}
-                style={({ pressed }) => [
-                  styles.cloudSecondaryBtn,
-                  (cloudBusy !== "idle" || !cloudResolved || checkingCloud) && {
-                    opacity: 0.55,
-                  },
-                  pressed &&
-                    cloudBusy === "idle" &&
-                    cloudResolved &&
-                    !checkingCloud && { opacity: 0.85 },
-                ]}
-              >
-                <Text style={styles.cloudSecondaryText}>Restore from backup</Text>
-              </Pressable>
+            {isConnected && cloudResolved && !checkingCloud ? (
+              <>
+                {hasLocalData && hasCloudBackup ? (
+                  <Pressable
+                    onPress={openRestoreModal}
+                    disabled={cloudBusy !== "idle"}
+                    style={({ pressed }) => [
+                      styles.cloudSecondaryBtn,
+                      cloudBusy !== "idle" && { opacity: 0.55 },
+                      pressed && cloudBusy === "idle" && { opacity: 0.85 },
+                    ]}
+                  >
+                    <Text style={styles.cloudSecondaryText}>Restore from backup</Text>
+                  </Pressable>
+                ) : null}
+              </>
             ) : null}
 
             {isConnected ? (
@@ -650,8 +652,8 @@ export default function SettingsScreen() {
             ) : null}
 
             <Text style={styles.cloudInfo}>
-              Your data is encrypted on this device using your wallet. Stackd cannot read or
-              recover your backup.
+              Your data is encrypted on this device using your wallet. Stackd cannot read or recover
+              your backup.
             </Text>
           </View>
         </Section>
@@ -662,9 +664,7 @@ export default function SettingsScreen() {
             style={({ pressed }) => [{ paddingVertical: 6 }, pressed && { opacity: 0.75 }]}
             hitSlop={10}
           >
-            <Text style={styles.advancedLink}>
-              {showAdvanced ? "Hide advanced" : "Advanced"}
-            </Text>
+            <Text style={styles.advancedLink}>{showAdvanced ? "Hide advanced" : "Advanced"}</Text>
           </Pressable>
 
           {showAdvanced ? (
@@ -677,9 +677,7 @@ export default function SettingsScreen() {
                   pressed && { opacity: 0.85 },
                 ]}
               >
-                <Text style={[styles.navText, { opacity: 0.75 }]}>
-                  Export offline backup
-                </Text>
+                <Text style={[styles.navText, { opacity: 0.75 }]}>Export offline backup</Text>
               </Pressable>
 
               <Pressable
@@ -690,10 +688,9 @@ export default function SettingsScreen() {
                   pressed && { opacity: 0.85 },
                 ]}
               >
-                <Text style={[styles.navText, { opacity: 0.75 }]}>
-                  Import offline backup
-                </Text>
+                <Text style={[styles.navText, { opacity: 0.75 }]}>Import offline backup</Text>
               </Pressable>
+
               <Text style={styles.advancedHelper}>
                 Offline backups are manual files stored on your device.
               </Text>
@@ -706,7 +703,11 @@ export default function SettingsScreen() {
           visible={restoreModalVisible}
           transparent
           animationType="fade"
-          onRequestClose={closeRestoreModal}
+          onRequestClose={() => {
+            if (cloudBusy === "restore") return;
+            setRestoreModalVisible(false);
+            setCloudBusyText("");
+          }}
         >
           <View style={styles.modalOverlay}>
             <View style={styles.modalCard}>
@@ -725,9 +726,7 @@ export default function SettingsScreen() {
               {cloudBusy === "restore" ? (
                 <View style={styles.modalProgressRow}>
                   <ActivityIndicator />
-                  <Text style={styles.modalProgressText}>
-                    {cloudBusyText || "Restoring…"}
-                  </Text>
+                  <Text style={styles.modalProgressText}>{cloudBusyText || "Restoring…"}</Text>
                 </View>
               ) : null}
 
@@ -745,7 +744,11 @@ export default function SettingsScreen() {
                 </Pressable>
 
                 <Pressable
-                  onPress={closeRestoreModal}
+                  onPress={() => {
+                    if (cloudBusy === "restore") return;
+                    setRestoreModalVisible(false);
+                    setCloudBusyText("");
+                  }}
                   disabled={cloudBusy === "restore"}
                   style={({ pressed }) => [
                     styles.modalSecondary,
@@ -772,31 +775,24 @@ export default function SettingsScreen() {
               <Text style={styles.modalTitle}>Choose currency</Text>
 
               {spotLoading ? (
-                <View
-                  style={{
-                    marginTop: 10,
-                    flexDirection: "row",
-                    alignItems: "center",
-                    gap: 10,
-                  }}
-                >
+                <View style={styles.pickerLoadingRow}>
                   <ActivityIndicator />
-                  <Text style={{ fontSize: 12, fontWeight: "800", opacity: 0.7 }}>
-                    Updating spot…
-                  </Text>
+                  <Text style={styles.pickerLoadingText}>Updating…</Text>
                 </View>
               ) : null}
 
               {CURRENCIES.map((c) => {
                 const active = c === currency;
-                const perOzOk =
-                  typeof perOzByCurrency?.[c] === "number" && perOzByCurrency[c] > 0;
 
                 return (
                   <Pressable
                     key={c}
                     onPress={async () => {
-                      if (!perOzOk) {
+                      const have =
+                        typeof perOzByCurrency?.[c] === "number" &&
+                        (perOzByCurrency?.[c] ?? 0) > 0;
+
+                      if (!have) {
                         try {
                           await refreshSpot();
                         } catch (e: any) {
@@ -808,10 +804,10 @@ export default function SettingsScreen() {
                       }
 
                       const stillMissing =
-                        typeof perOzByCurrency?.[c] !== "number" || perOzByCurrency[c] <= 0;
+                        typeof perOzByCurrency?.[c] !== "number" ||
+                        (perOzByCurrency?.[c] ?? 0) <= 0;
 
                       if (stillMissing) {
-                        // keep the UX simple if spot isn't available (often due to rate limits)
                         showRateLimitOk();
                         return;
                       }
@@ -969,7 +965,12 @@ const styles = StyleSheet.create({
   navText: { fontSize: 14, fontWeight: "900", opacity: 0.85 },
 
   cloudCard: { borderRadius: 18, padding: 14, backgroundColor: "rgba(255,255,255,0.65)" },
-  cloudTopRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 },
+  cloudTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
   cloudTitle: { fontSize: 15, fontWeight: "900", opacity: 0.9 },
   cloudSub: { marginTop: 6, fontSize: 12, fontWeight: "800", opacity: 0.7 },
   cloudMeta: { marginTop: 6, fontSize: 12, fontWeight: "800", opacity: 0.6 },
@@ -998,11 +999,21 @@ const styles = StyleSheet.create({
   cloudSecondaryText: { fontSize: 14, fontWeight: "900", opacity: 0.85 },
 
   cloudLinkBtn: { marginTop: 10, alignSelf: "flex-start", paddingVertical: 6 },
-  cloudLinkText: { fontSize: 13, fontWeight: "900", opacity: 0.7, textDecorationLine: "underline" },
+  cloudLinkText: {
+    fontSize: 13,
+    fontWeight: "900",
+    opacity: 0.7,
+    textDecorationLine: "underline",
+  },
 
   cloudInfo: { marginTop: 10, fontSize: 12, opacity: 0.65, lineHeight: 16 },
 
-  advancedLink: { fontSize: 12, fontWeight: "900", opacity: 0.55, textDecorationLine: "underline" },
+  advancedLink: {
+    fontSize: 12,
+    fontWeight: "900",
+    opacity: 0.55,
+    textDecorationLine: "underline",
+  },
   advancedHelper: { marginTop: 6, fontSize: 11, opacity: 0.55, lineHeight: 15 },
 
   pill: {
@@ -1017,7 +1028,12 @@ const styles = StyleSheet.create({
   pillNeutral: { backgroundColor: "rgba(0,0,0,0.08)" },
   pillText: { fontSize: 12, fontWeight: "900", opacity: 0.75 },
 
-  modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.35)", padding: 16, justifyContent: "center" },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.35)",
+    padding: 16,
+    justifyContent: "center",
+  },
   modalCard: { borderRadius: 18, backgroundColor: "#fff", padding: 16 },
   modalTitle: { fontSize: 16, fontWeight: "900", opacity: 0.9 },
   modalBody: { marginTop: 10, fontSize: 13, fontWeight: "700", opacity: 0.75, lineHeight: 18 },
@@ -1053,4 +1069,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.08)",
   },
   modalSecondaryText: { fontSize: 14, fontWeight: "900", opacity: 0.85 },
+
+  pickerLoadingRow: { marginTop: 10, flexDirection: "row", alignItems: "center", gap: 10 },
+  pickerLoadingText: { fontSize: 12, fontWeight: "800", opacity: 0.7 },
 });

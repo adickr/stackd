@@ -30,11 +30,13 @@ function parseNumber(input: string) {
 export default function CoinPicker() {
   const router = useRouter();
 
-  // store hooks (INSIDE component)
   const seedIfEmpty = useCoinStore((s) => s.seedIfEmpty);
   const coins = useCoinStore((s) => s.coins);
   const hasHydrated = useCoinStore((s) => s.hasHydrated);
-  const forceResetToSeeds = useCoinStore((s) => s.forceResetToSeeds);
+
+  // ✅ clearer name
+  const restoreDefaults = useCoinStore((s) => s.restoreDefaults);
+
   const createCoin = useCoinStore((s) => s.createCoin);
 
   const [q, setQ] = useState("");
@@ -139,9 +141,7 @@ export default function CoinPicker() {
         <View style={styles.header}>
           <Text style={styles.title}>Pick a coin</Text>
           <Text style={styles.subtitle}>
-            {hasHydrated
-              ? `${coins.length} coins in library`
-              : "Loading coin library…"}
+            {hasHydrated ? `${coins.length} coins in library` : "Loading coin library…"}
           </Text>
         </View>
 
@@ -162,15 +162,10 @@ export default function CoinPicker() {
         ) : coins.length === 0 ? (
           <View style={{ gap: 10 }}>
             <Text style={styles.errorText}>Coin library is empty</Text>
-            <Text style={styles.muted}>
-              Restore default coins to continue.
-            </Text>
+            <Text style={styles.muted}>Restore default coins to continue.</Text>
             <Pressable
-              onPress={forceResetToSeeds}
-              style={({ pressed }) => [
-                styles.primaryBtn,
-                pressed && { opacity: 0.9 },
-              ]}
+              onPress={restoreDefaults}
+              style={({ pressed }) => [styles.primaryBtn, pressed && { opacity: 0.9 }]}
             >
               <Text style={styles.primaryText}>Restore default coins</Text>
             </Pressable>
@@ -181,14 +176,9 @@ export default function CoinPicker() {
         {showCreate && hasHydrated ? (
           <Pressable
             onPress={openCreate}
-            style={({ pressed }) => [
-              styles.createCard,
-              pressed && { opacity: 0.9 },
-            ]}
+            style={({ pressed }) => [styles.createCard, pressed && { opacity: 0.9 }]}
           >
-            <Text style={styles.createTitle}>
-              + Create custom coin “{q.trim()}”
-            </Text>
+            <Text style={styles.createTitle}>+ Create custom coin “{q.trim()}”</Text>
             <Text style={styles.createSub}>Add it to your library</Text>
           </Pressable>
         ) : null}
@@ -200,11 +190,7 @@ export default function CoinPicker() {
               <Text style={styles.muted}>No results.</Text>
             ) : (
               results.map((c) => (
-                <Pressable
-                  key={c.id}
-                  onPress={() => selectCoin(c.id)}
-                  style={styles.coinCard}
-                >
+                <Pressable key={c.id} onPress={() => selectCoin(c.id)} style={styles.coinCard}>
                   <Text style={styles.coinTitle}>{c.name}</Text>
                   <Text style={styles.coinSub}>
                     {c.metal} • purity {c.purity} • {c.fineWeightGrams} g fine
@@ -223,12 +209,7 @@ export default function CoinPicker() {
         </Pressable>
 
         {/* Create modal */}
-        <Modal
-          visible={open}
-          animationType="slide"
-          transparent
-          onRequestClose={closeCreate}
-        >
+        <Modal visible={open} animationType="slide" transparent onRequestClose={closeCreate}>
           <View style={styles.backdrop}>
             <View style={styles.sheet}>
               <View style={styles.sheetHeader}>
@@ -239,12 +220,7 @@ export default function CoinPicker() {
               </View>
 
               <Text style={styles.label}>Name</Text>
-              <TextInput
-                value={name}
-                onChangeText={setName}
-                style={styles.input}
-                placeholder="Name"
-              />
+              <TextInput value={name} onChangeText={setName} style={styles.input} placeholder="Name" />
 
               <View style={styles.twoCol}>
                 <View style={{ flex: 1 }}>
@@ -253,9 +229,7 @@ export default function CoinPicker() {
                     value={purity}
                     onChangeText={setPurity}
                     style={styles.input}
-                    keyboardType={
-                      Platform.OS === "ios" ? "decimal-pad" : "numeric"
-                    }
+                    keyboardType={Platform.OS === "ios" ? "decimal-pad" : "numeric"}
                     placeholder="0.999"
                   />
                 </View>
@@ -265,9 +239,7 @@ export default function CoinPicker() {
                     value={fineG}
                     onChangeText={setFineG}
                     style={styles.input}
-                    keyboardType={
-                      Platform.OS === "ios" ? "decimal-pad" : "numeric"
-                    }
+                    keyboardType={Platform.OS === "ios" ? "decimal-pad" : "numeric"}
                     placeholder="31.1035"
                   />
                 </View>
@@ -280,9 +252,7 @@ export default function CoinPicker() {
                     value={diameter}
                     onChangeText={setDiameter}
                     style={styles.input}
-                    keyboardType={
-                      Platform.OS === "ios" ? "decimal-pad" : "numeric"
-                    }
+                    keyboardType={Platform.OS === "ios" ? "decimal-pad" : "numeric"}
                     placeholder="optional"
                   />
                 </View>
@@ -292,9 +262,7 @@ export default function CoinPicker() {
                     value={thickness}
                     onChangeText={setThickness}
                     style={styles.input}
-                    keyboardType={
-                      Platform.OS === "ios" ? "decimal-pad" : "numeric"
-                    }
+                    keyboardType={Platform.OS === "ios" ? "decimal-pad" : "numeric"}
                     placeholder="optional"
                   />
                 </View>
@@ -321,10 +289,7 @@ export default function CoinPicker() {
 
               <Pressable
                 onPress={saveCreate}
-                style={({ pressed }) => [
-                  styles.primaryBtn,
-                  pressed && { opacity: 0.9 },
-                ]}
+                style={({ pressed }) => [styles.primaryBtn, pressed && { opacity: 0.9 }]}
               >
                 <Text style={styles.primaryText}>Save coin</Text>
               </Pressable>
